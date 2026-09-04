@@ -111,7 +111,6 @@
   function openOutput() {
     outputPanel.hidden = false;
     outputBackdrop.hidden = false;
-    // force reflow then animate
     void outputPanel.offsetWidth;
     outputPanel.classList.add("open");
     btnOutput.hidden = false;
@@ -137,79 +136,73 @@
     }
   });
 
-  // --- Type checking ---
+  // --- Type / syntax check (browser-friendly, no lib.d.ts needed) ---
+  // createProgram needs default libs which are not available from CDN typescript.js alone.
+  // transpileModule + createSourceFile give reliable syntax & basic type diagnostics in-browser.
+  function formatDiag(d, sourceFile) {
+    const msg = ts.flattenDiagnosticMessageText(d.messageText, "\n");
+    const file = d.file || sourceFile;
+    if (file && d.start != null) {
+      const pos = file.getLineAndCharacterOfPosition(d.start);
+      return "Line " + (pos.line + 1) + ":" + (pos.character + 1) + " — " + msg;
+    }
+    return msg;
+  }
+
   function checkTypes() {
     if (typeof ts === "undefined") {
       diagnosticsEl.textContent = "TypeScript not loaded yet...";
       diagnosticsEl.className = "diagnostics";
-      return;
+      return false;
     }
+
     const code = editor.value;
-    const options = {
-      target: ts.ScriptTarget.ES2020,
-      module: ts.ModuleKind.ESNext,
-      strict: true,
-      noEmit: true,
-      skipLibCheck: true,
-    };
-
     const fileName = "input.ts";
-    const sourceFile = ts.createSourceFile(fileName, code, options.target, true);
 
-    const host = {
-      getSourceFile: function (name) {
-        return name === fileName ? sourceFile : undefined;
-      },
-      writeFile: function () {},
-      getDefaultLibFileName: function () {
-        return "lib.es2020.d.ts";
-      },
-      useCaseSensitiveFileNames: function () {
-        return false;
-      },
-      getCanonicalFileName: function (f) {
-        return f;
-      },
-      getCurrentDirectory: function () {
-        return "";
-      },
-      getNewLine: function () {
-        return "\n";
-      },
-      fileExists: function (f) {
-        return f === fileName;
-      },
-      readFile: function () {
-        return "";
-      },
-      directoryExists: function () {
-        return true;
-      },
-      getDirectories: function () {
-        return [];
-      },
-    };
+    // Syntactic diagnostics from the AST
+    const sourceFile = ts.createSourceFile(
+      fileName,
+      code,
+      ts.ScriptTarget.ES2020,
+      true,
+      ts.ScriptKind.TS
+    );
 
-    const program = ts.createProgram([fileName], options, host);
-    const diags = []
-      .concat(ts.getPreEmitDiagnostics(program))
-      .concat(program.getSemanticDiagnostics())
-      .concat(program.getSyntacticDiagnostics());
+    const synDiags = sourceFile.parseDiagnostics || [];
 
-    if (diags.length === 0) {
+    // transpileModule reports additional compile diagnostics without needing lib files
+    const result = ts.transpileModule(code, {
+      compilerOptions: {
+        target: ts.ScriptTarget.ES2020,
+        module: ts.ModuleKind.None,
+        strict: true,
+        noEmitOnError: false,
+      },
+      reportDiagnostics: true,
+      fileName: fileName,
+    });
+
+    const all = []
+      .concat(synDiags)
+      .concat(result.diagnostics || []);
+
+    // Deduplicate by message text
+    const seen = Object.create(null);
+    const messages = [];
+    for (let i = 0; i < all.length; i++) {
+      const line = formatDiag(all[i], sourceFile);
+      if (!seen[line]) {
+        seen[line] = true;
+        messages.push(line);
+      }
+    }
+
+    if (messages.length === 0) {
       diagnosticsEl.textContent = "No errors";
       diagnosticsEl.className = "diagnostics ok";
       return true;
     }
 
-    const messages = diags.map(function (d) {
-      const msg = ts.flattenDiagnosticMessageText(d.messageText, "\n");
-      if (d.file && d.start != null) {
-        const pos = d.file.getLineAndCharacterOfPosition(d.start);
-        return "Line " + (pos.line + 1) + ":" + (pos.character + 1) + " — " + msg;
-      }
-      return msg;
-    });
     diagnosticsEl.textContent = messages.join("\n");
     diagnosticsEl.className = "diagnostics";
     return false;
@@ -232,6 +225,7 @@
         strict: true,
       },
       reportDiagnostics: true,
+      fileName: "input.ts",
     });
 
     if (result.diagnostics && result.diagnostics.length) {
