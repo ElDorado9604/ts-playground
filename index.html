@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-  <meta name="description" content="Lightweight TypeScript compiler playground. Mobile-friendly with undo/redo and type checking." />
+  <meta name="description" content="Lightweight TypeScript compiler playground. Full-page editor, mobile-friendly." />
   <title>TS Playground</title>
   <link rel="stylesheet" href="styles.css" />
   <script src="https://cdn.jsdelivr.net/npm/typescript@5.6.3/lib/typescript.js"></script>
@@ -14,29 +14,30 @@
     <div class="toolbar">
       <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
       <button id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
-      <button id="btn-run" class="primary" title="Compile & Run">Run</button>
-      <button id="btn-clear" title="Clear output">Clear</button>
+      <button id="btn-run" class="primary" title="Compile & Run (Ctrl+Enter)">Run</button>
+      <button id="btn-output" title="Show last output" hidden>Output</button>
       <button id="btn-copy" title="Copy code">Copy</button>
       <button id="btn-paste" title="Paste code">Paste</button>
     </div>
   </header>
 
-  <main>
-    <section class="editor-pane">
-      <label for="editor">TypeScript</label>
-      <textarea id="editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="// Write TypeScript here...\nconst msg: string = 'Hello';\nconsole.log(msg);"></textarea>
-      <div id="diagnostics" class="diagnostics"></div>
-    </section>
-
-    <section class="output-pane">
-      <label>Output / Console</label>
-      <pre id="output"></pre>
-    </section>
+  <main class="editor-only">
+    <textarea id="editor" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off" placeholder="// Write TypeScript here..."></textarea>
+    <div id="diagnostics" class="diagnostics" aria-live="polite"></div>
   </main>
 
-  <footer>
-    <span>Lightweight TS compiler · Works offline after first load · GitHub Pages</span>
-  </footer>
+  <!-- Output panel: hidden until Run -->
+  <div id="output-backdrop" class="output-backdrop" hidden></div>
+  <aside id="output-panel" class="output-panel" hidden role="dialog" aria-label="Output">
+    <div class="output-header">
+      <span>Output / Console</span>
+      <div class="output-actions">
+        <button id="btn-clear" type="button">Clear</button>
+        <button id="btn-close-output" type="button" class="primary">Close</button>
+      </div>
+    </div>
+    <pre id="output"></pre>
+  </aside>
 
   <script src="app.js"></script>
 </body>

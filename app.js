@@ -4,10 +4,14 @@
   const editor = document.getElementById("editor");
   const output = document.getElementById("output");
   const diagnosticsEl = document.getElementById("diagnostics");
+  const outputPanel = document.getElementById("output-panel");
+  const outputBackdrop = document.getElementById("output-backdrop");
   const btnUndo = document.getElementById("btn-undo");
   const btnRedo = document.getElementById("btn-redo");
   const btnRun = document.getElementById("btn-run");
+  const btnOutput = document.getElementById("btn-output");
   const btnClear = document.getElementById("btn-clear");
+  const btnCloseOutput = document.getElementById("btn-close-output");
   const btnCopy = document.getElementById("btn-copy");
   const btnPaste = document.getElementById("btn-paste");
 
@@ -19,7 +23,6 @@
 
   function pushHistory(value) {
     if (isApplyingHistory) return;
-    // Debounce: only push if different from last
     if (historyIndex >= 0 && history[historyIndex] === value) return;
     history = history.slice(0, historyIndex + 1);
     history.push(value);
@@ -56,7 +59,6 @@
     btnRedo.disabled = historyIndex >= history.length - 1;
   }
 
-  // Initial state
   const defaultCode =
     "// Write TypeScript here\n" +
     "const greeting: string = 'Hello from TS Playground';\n" +
@@ -69,7 +71,6 @@
   editor.value = defaultCode;
   pushHistory(defaultCode);
 
-  // Input handling with debounce for history
   let inputTimer = null;
   editor.addEventListener("input", function () {
     clearTimeout(inputTimer);
@@ -79,9 +80,7 @@
     }, 300);
   });
 
-  // Keyboard shortcuts
   editor.addEventListener("keydown", function (e) {
-    // Tab inserts spaces
     if (e.key === "Tab") {
       e.preventDefault();
       const start = editor.selectionStart;
@@ -89,11 +88,9 @@
       const val = editor.value;
       editor.value = val.substring(0, start) + "  " + val.substring(end);
       editor.selectionStart = editor.selectionEnd = start + 2;
-      // Trigger input logic
       pushHistory(editor.value);
       return;
     }
-    // Ctrl/Cmd + Z / Y / Enter
     const mod = e.ctrlKey || e.metaKey;
     if (mod && e.key === "z" && !e.shiftKey) {
       e.preventDefault();
@@ -109,6 +106,36 @@
 
   btnUndo.addEventListener("click", undo);
   btnRedo.addEventListener("click", redo);
+
+  // --- Output panel show / hide ---
+  function openOutput() {
+    outputPanel.hidden = false;
+    outputBackdrop.hidden = false;
+    // force reflow then animate
+    void outputPanel.offsetWidth;
+    outputPanel.classList.add("open");
+    btnOutput.hidden = false;
+  }
+
+  function closeOutput() {
+    outputPanel.classList.remove("open");
+    setTimeout(function () {
+      if (!outputPanel.classList.contains("open")) {
+        outputPanel.hidden = true;
+        outputBackdrop.hidden = true;
+      }
+    }, 230);
+  }
+
+  btnCloseOutput.addEventListener("click", closeOutput);
+  outputBackdrop.addEventListener("click", closeOutput);
+  btnOutput.addEventListener("click", openOutput);
+
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && outputPanel.classList.contains("open")) {
+      closeOutput();
+    }
+  });
 
   // --- Type checking ---
   function checkTypes() {
@@ -126,11 +153,9 @@
       skipLibCheck: true,
     };
 
-    // Create a virtual source file
     const fileName = "input.ts";
     const sourceFile = ts.createSourceFile(fileName, code, options.target, true);
 
-    // Simple compiler host for diagnostics only
     const host = {
       getSourceFile: function (name) {
         return name === fileName ? sourceFile : undefined;
@@ -180,8 +205,8 @@
     const messages = diags.map(function (d) {
       const msg = ts.flattenDiagnosticMessageText(d.messageText, "\n");
       if (d.file && d.start != null) {
-        const { line, character } = d.file.getLineAndCharacterOfPosition(d.start);
-        return "Line " + (line + 1) + ":" + (character + 1) + " — " + msg;
+        const pos = d.file.getLineAndCharacterOfPosition(d.start);
+        return "Line " + (pos.line + 1) + ":" + (pos.character + 1) + " — " + msg;
       }
       return msg;
     });
@@ -195,22 +220,20 @@
     output.textContent = "";
     if (typeof ts === "undefined") {
       output.textContent = "Error: TypeScript library failed to load.";
+      openOutput();
       return;
     }
 
     const code = editor.value;
-    const transpileOptions = {
+    const result = ts.transpileModule(code, {
       compilerOptions: {
         target: ts.ScriptTarget.ES2020,
         module: ts.ModuleKind.None,
         strict: true,
       },
       reportDiagnostics: true,
-    };
+    });
 
-    const result = ts.transpileModule(code, transpileOptions);
-
-    // Show compile diagnostics if any
     if (result.diagnostics && result.diagnostics.length) {
       const msgs = result.diagnostics.map(function (d) {
         return ts.flattenDiagnosticMessageText(d.messageText, "\n");
@@ -218,7 +241,6 @@
       output.textContent = "Compile errors:\n" + msgs.join("\n") + "\n\n";
     }
 
-    // Capture console
     const logs = [];
     const original = {
       log: console.log,
@@ -250,7 +272,6 @@
     console.info = capture("info");
 
     try {
-      // Use Function constructor for isolation
       const fn = new Function(result.outputText);
       fn();
       if (logs.length === 0) {
@@ -258,7 +279,8 @@
       }
       output.textContent += logs.join("\n");
     } catch (err) {
-      output.textContent += "Runtime error:\n" + (err && err.stack ? err.stack : String(err));
+      output.textContent +=
+        "Runtime error:\n" + (err && err.stack ? err.stack : String(err));
     } finally {
       console.log = original.log;
       console.error = original.error;
@@ -266,8 +288,8 @@
       console.info = original.info;
     }
 
-    // Also refresh type diagnostics
     checkTypes();
+    openOutput();
   }
 
   btnRun.addEventListener("click", run);
@@ -275,14 +297,13 @@
     output.textContent = "";
   });
 
-  // --- Copy / Paste (mobile friendly) ---
+  // --- Copy / Paste ---
   btnCopy.addEventListener("click", async function () {
     const text = editor.value;
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
         await navigator.clipboard.writeText(text);
       } else {
-        // Fallback
         editor.select();
         document.execCommand("copy");
         editor.setSelectionRange(0, 0);
@@ -292,7 +313,6 @@
         btnCopy.textContent = "Copy";
       }, 1200);
     } catch (e) {
-      // Last resort: select so user can copy manually
       editor.focus();
       editor.select();
       alert("Could not copy automatically. Code is selected — use system copy.");
@@ -312,17 +332,15 @@
         checkTypes();
         editor.focus();
       } else {
-        // Fallback: focus and let user paste
         editor.focus();
-        alert("Clipboard API not available. Focus the editor and use system paste (long-press or Ctrl+V).");
+        alert("Clipboard API not available. Focus the editor and use system paste.");
       }
     } catch (e) {
       editor.focus();
-      alert("Paste permission denied or unavailable. Focus the editor and paste manually.");
+      alert("Paste permission denied. Focus the editor and paste manually.");
     }
   });
 
-  // Initial type check after TS loads
   function waitForTs() {
     if (typeof ts !== "undefined") {
       checkTypes();
@@ -332,7 +350,5 @@
   }
   waitForTs();
 
-  // Make editor usable on mobile: prevent zoom on focus is handled by viewport meta
-  // Ensure touch selection works
   editor.addEventListener("touchstart", function () {}, { passive: true });
 })();
