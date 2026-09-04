@@ -106,7 +106,7 @@
   btnUndo.addEventListener("click", undo);
   btnRedo.addEventListener("click", redo);
 
-  // --- Output panel (reliable class toggle, no [hidden]) ---
+  // --- Output panel ---
   function openOutput() {
     outputBackdrop.classList.add("visible");
     outputPanel.classList.add("open");
@@ -200,6 +200,40 @@
     return false;
   }
 
+  /** Make runtime errors readable on mobile Safari (stack alone is often useless). */
+  function formatRuntimeError(err) {
+    if (err == null) return "Unknown error";
+
+    const name = err.name || "Error";
+    const message = err.message || String(err);
+
+    let text = name + ": " + message;
+
+    // Optional short stack, cleaned of our runner frame
+    if (err.stack) {
+      const lines = String(err.stack)
+        .split("\n")
+        .map(function (l) {
+          return l.trim();
+        })
+        .filter(function (l) {
+          if (!l) return false;
+          // drop our internal runner frames
+          if (/app\.js:\d+/.test(l)) return false;
+          if (/^run@/.test(l)) return false;
+          // Safari often repeats message on first line
+          if (l === name + ": " + message || l === message) return false;
+          return true;
+        });
+
+      if (lines.length) {
+        text += "\n\n" + lines.slice(0, 4).join("\n");
+      }
+    }
+
+    return text;
+  }
+
   // --- Compile & Run ---
   function run() {
     output.textContent = "";
@@ -258,6 +292,7 @@
     console.info = capture("info");
 
     try {
+      // Use indirect eval-style Function so user code runs in global-ish scope
       const fn = new Function(result.outputText);
       fn();
       if (logs.length === 0) {
@@ -265,8 +300,7 @@
       }
       output.textContent += logs.join("\n");
     } catch (err) {
-      output.textContent +=
-        "Runtime error:\n" + (err && err.stack ? err.stack : String(err));
+      output.textContent += "Runtime error:\n" + formatRuntimeError(err);
     } finally {
       console.log = original.log;
       console.error = original.error;
