@@ -12,14 +12,13 @@
   const btnOutput = document.getElementById("btn-output");
   const btnClear = document.getElementById("btn-clear");
   const btnCloseOutput = document.getElementById("btn-close-output");
-  const btnCopy = document.getElementById("btn-copy");
-  const btnPaste = document.getElementById("btn-paste");
 
   // --- History for Undo / Redo ---
   const MAX_HISTORY = 100;
   let history = [];
   let historyIndex = -1;
   let isApplyingHistory = false;
+  let hasRunOnce = false;
 
   function pushHistory(value) {
     if (isApplyingHistory) return;
@@ -107,28 +106,28 @@
   btnUndo.addEventListener("click", undo);
   btnRedo.addEventListener("click", redo);
 
-  // --- Output panel show / hide ---
+  // --- Output panel (reliable class toggle, no [hidden]) ---
   function openOutput() {
-    outputPanel.hidden = false;
-    outputBackdrop.hidden = false;
-    void outputPanel.offsetWidth;
+    outputBackdrop.classList.add("visible");
     outputPanel.classList.add("open");
-    btnOutput.hidden = false;
+    outputBackdrop.setAttribute("aria-hidden", "false");
+    outputPanel.setAttribute("aria-hidden", "false");
+    btnOutput.disabled = false;
+    hasRunOnce = true;
   }
 
   function closeOutput() {
+    outputBackdrop.classList.remove("visible");
     outputPanel.classList.remove("open");
-    setTimeout(function () {
-      if (!outputPanel.classList.contains("open")) {
-        outputPanel.hidden = true;
-        outputBackdrop.hidden = true;
-      }
-    }, 230);
+    outputBackdrop.setAttribute("aria-hidden", "true");
+    outputPanel.setAttribute("aria-hidden", "true");
   }
 
   btnCloseOutput.addEventListener("click", closeOutput);
   outputBackdrop.addEventListener("click", closeOutput);
-  btnOutput.addEventListener("click", openOutput);
+  btnOutput.addEventListener("click", function () {
+    if (hasRunOnce) openOutput();
+  });
 
   document.addEventListener("keydown", function (e) {
     if (e.key === "Escape" && outputPanel.classList.contains("open")) {
@@ -136,9 +135,7 @@
     }
   });
 
-  // --- Type / syntax check (browser-friendly, no lib.d.ts needed) ---
-  // createProgram needs default libs which are not available from CDN typescript.js alone.
-  // transpileModule + createSourceFile give reliable syntax & basic type diagnostics in-browser.
+  // --- Type / syntax check ---
   function formatDiag(d, sourceFile) {
     const msg = ts.flattenDiagnosticMessageText(d.messageText, "\n");
     const file = d.file || sourceFile;
@@ -159,7 +156,6 @@
     const code = editor.value;
     const fileName = "input.ts";
 
-    // Syntactic diagnostics from the AST
     const sourceFile = ts.createSourceFile(
       fileName,
       code,
@@ -170,7 +166,6 @@
 
     const synDiags = sourceFile.parseDiagnostics || [];
 
-    // transpileModule reports additional compile diagnostics without needing lib files
     const result = ts.transpileModule(code, {
       compilerOptions: {
         target: ts.ScriptTarget.ES2020,
@@ -182,11 +177,8 @@
       fileName: fileName,
     });
 
-    const all = []
-      .concat(synDiags)
-      .concat(result.diagnostics || []);
+    const all = [].concat(synDiags).concat(result.diagnostics || []);
 
-    // Deduplicate by message text
     const seen = Object.create(null);
     const messages = [];
     for (let i = 0; i < all.length; i++) {
@@ -291,50 +283,6 @@
     output.textContent = "";
   });
 
-  // --- Copy / Paste ---
-  btnCopy.addEventListener("click", async function () {
-    const text = editor.value;
-    try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        editor.select();
-        document.execCommand("copy");
-        editor.setSelectionRange(0, 0);
-      }
-      btnCopy.textContent = "Copied!";
-      setTimeout(function () {
-        btnCopy.textContent = "Copy";
-      }, 1200);
-    } catch (e) {
-      editor.focus();
-      editor.select();
-      alert("Could not copy automatically. Code is selected — use system copy.");
-    }
-  });
-
-  btnPaste.addEventListener("click", async function () {
-    try {
-      if (navigator.clipboard && navigator.clipboard.readText) {
-        const text = await navigator.clipboard.readText();
-        const start = editor.selectionStart;
-        const end = editor.selectionEnd;
-        const val = editor.value;
-        editor.value = val.substring(0, start) + text + val.substring(end);
-        editor.selectionStart = editor.selectionEnd = start + text.length;
-        pushHistory(editor.value);
-        checkTypes();
-        editor.focus();
-      } else {
-        editor.focus();
-        alert("Clipboard API not available. Focus the editor and use system paste.");
-      }
-    } catch (e) {
-      editor.focus();
-      alert("Paste permission denied. Focus the editor and paste manually.");
-    }
-  });
-
   function waitForTs() {
     if (typeof ts !== "undefined") {
       checkTypes();
@@ -343,6 +291,4 @@
     }
   }
   waitForTs();
-
-  editor.addEventListener("touchstart", function () {}, { passive: true });
 })();

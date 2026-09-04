@@ -20,7 +20,7 @@ body {
   overflow: hidden;
 }
 
-/* ---- Toolbar (top only) ---- */
+/* ---- Toolbar ---- */
 header {
   flex-shrink: 0;
   display: flex;
@@ -105,7 +105,7 @@ main.editor-only {
   color: #e6edf3;
   padding: 0.75rem 0.85rem;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 14px;
+  font-size: 16px; /* 16px avoids iOS zoom on focus */
   line-height: 1.5;
   tab-size: 2;
   -webkit-overflow-scrolling: touch;
@@ -117,7 +117,6 @@ main.editor-only {
   outline: none;
 }
 
-/* Thin diagnostics bar under editor */
 .diagnostics {
   flex-shrink: 0;
   max-height: 4.5rem;
@@ -141,12 +140,22 @@ main.editor-only {
   display: none;
 }
 
-/* ---- Output slide-up panel ---- */
+/* ---- Output panel (class-based, no [hidden] fighting transforms) ---- */
 .output-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.5);
   z-index: 40;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.output-backdrop.visible {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
 }
 
 .output-panel {
@@ -155,19 +164,21 @@ main.editor-only {
   right: 0;
   bottom: 0;
   z-index: 50;
-  max-height: min(55dvh, 420px);
+  max-height: min(60dvh, 480px);
   display: flex;
   flex-direction: column;
   background: #0d1117;
   border-top: 1px solid #30363d;
   border-radius: 12px 12px 0 0;
-  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.4);
-  transform: translateY(100%);
-  transition: transform 0.22s ease;
+  box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.45);
+  transform: translateY(110%);
+  transition: transform 0.25s ease;
+  pointer-events: none;
 }
 
 .output-panel.open {
   transform: translateY(0);
+  pointer-events: auto;
 }
 
 .output-header {
@@ -198,7 +209,7 @@ main.editor-only {
 
 #output {
   flex: 1;
-  min-height: 0;
+  min-height: 120px;
   margin: 0;
   padding: 0.75rem;
   overflow: auto;
@@ -208,17 +219,17 @@ main.editor-only {
   white-space: pre-wrap;
   word-break: break-word;
   -webkit-overflow-scrolling: touch;
+  -webkit-user-select: text;
+  user-select: text;
 }
 
-/* Desktop: slightly taller panel, not full width if desired */
 @media (min-width: 700px) {
   .output-panel {
-    max-height: min(50dvh, 480px);
+    max-height: min(55dvh, 520px);
     left: 50%;
     right: auto;
     width: min(640px, 92vw);
-    transform: translate(-50%, 100%);
-    border-radius: 12px 12px 0 0;
+    transform: translate(-50%, 110%);
   }
   .output-panel.open {
     transform: translate(-50%, 0);
