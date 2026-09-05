@@ -24,7 +24,6 @@
     "}\n\n" +
     "console.log('2 + 3 =', add(2, 3));";
 
-  // ---- CodeMirror editor ----
   const cm = CodeMirror.fromTextArea(document.getElementById("editor"), {
     mode: "text/typescript",
     theme: "default",
@@ -123,12 +122,12 @@
     }
   });
 
-  // ---- Full type-check: load TS default libs into a virtual FS ----
+  // ---- Type libs (virtual filesystem) ----
   const TS_VERSION = "5.6.3";
   const LIB_CDN =
     "https://cdn.jsdelivr.net/npm/typescript@" + TS_VERSION + "/lib/";
 
-  // Files needed for target ES2020 + DOM (console, setTimeout, etc.)
+  // Minimal set that covers ES2020 + DOM globals (console, Promise, Array, …)
   const LIB_FILES = [
     "lib.es5.d.ts",
     "lib.es2015.d.ts",
@@ -171,13 +170,20 @@
     "lib.es2020.intl.d.ts",
     "lib.dom.d.ts",
     "lib.dom.iterable.d.ts",
-    "lib.scripthost.d.ts",
   ];
 
   /** @type {Record<string, string>} */
-  const libCache = Object.create(null);
+  const fsMap = Object.create(null);
   let libsReady = false;
   let libsLoading = null;
+
+  function normalizeLibName(name) {
+    // TS may request "lib.es5.d.ts", "/lib.es5.d.ts", or full paths
+    let n = String(name).replace(/\\/g, "/");
+    const idx = n.lastIndexOf("/");
+    if (idx >= 0) n = n.slice(idx + 1);
+    return n;
+  }
 
   function loadLibs() {
     if (libsReady) return Promise.resolve();
@@ -190,20 +196,21 @@
       LIB_FILES.map(function (name) {
         return fetch(LIB_CDN + name)
           .then(function (r) {
-            if (!r.ok) throw new Error("Failed to load " + name);
+            if (!r.ok) throw new Error(String(r.status));
             return r.text();
           })
           .then(function (text) {
-            libCache[name] = text;
-            // Also register under the bare name TS looks up sometimes
-            libCache["/" + name] = text;
+            fsMap[name] = text;
           })
-          .catch(function () {
-            // Non-fatal: some optional libs may 404 on version skew
-            libCache[name] = "";
+          .catch(function (err) {
+            console.warn("lib load failed", name, err);
           });
       })
     ).then(function () {
+      // Sanity: es5 must exist (Array, Boolean, Function, …)
+      if (!fsMap["lib.es5.d.ts"]) {
+        throw new Error("Failed to load core type library (lib.es5.d.ts)");
+      }
       libsReady = true;
       libsLoading = null;
     });
@@ -227,117 +234,136 @@
       return Promise.resolve(false);
     }
 
-    return loadLibs().then(function () {
-      const code = getCode();
-      const fileName = "input.ts";
+    return loadLibs()
+      .then(function () {
+        const code = getCode();
+        const fileName = "input.ts";
 
-      const compilerOptions = {
-        target: ts.ScriptTarget.ES2020,
-        module: ts.ModuleKind.ESNext,
-        lib: ["es2020", "dom"],
-        strict: true,
-        noEmit: true,
-        skipLibCheck: true,
-        allowNonTsExtensions: true,
-      };
+        const compilerOptions = {
+          target: ts.ScriptTarget.ES2020,
+          module: ts.ModuleKind.ESNext,
+          lib: ["ES2020", "DOM"],
+          strict: true,
+          noEmit: true,
+          skipLibCheck: true,
+          allowNonTsExtensions: true,
+        };
 
-      const sourceFile = ts.createSourceFile(
-        fileName,
-        code,
-        compilerOptions.target,
-        true,
-        ts.ScriptKind.TS
-      );
+        // Cache of SourceFile objects for this check
+        const sourceCache = Object.create(null);
 
-      const host = {
-        getSourceFile: function (name, languageVersion) {
-          if (name === fileName) return sourceFile;
-          // Normalize path
-          const base = name.replace(/^\/?/, "").replace(/\\/g, "/");
-          const text =
-            libCache[base] ||
-            libCache[name] ||
-            libCache["/" + base] ||
-            null;
-          if (text != null && text !== "") {
-            return ts.createSourceFile(
-              name,
-              text,
-              languageVersion || compilerOptions.target,
-              true
+        function getSourceFile(name) {
+          if (sourceCache[name]) return sourceCache[name];
+
+          if (name === fileName) {
+            sourceCache[name] = ts.createSourceFile(
+              fileName,
+              code,
+              compilerOptions.target,
+              true,
+              ts.ScriptKind.TS
             );
+            return sourceCache[name];
+          }
+
+          const libName = normalizeLibName(name);
+          const text = fsMap[libName];
+          if (typeof text === "string") {
+            sourceCache[name] = ts.createSourceFile(
+              libName,
+              text,
+              compilerOptions.target,
+              true,
+              ts.ScriptKind.TS
+            );
+            return sourceCache[name];
           }
           return undefined;
-        },
-        writeFile: function () {},
-        getDefaultLibFileName: function () {
-          return "lib.es2020.d.ts";
-        },
-        getDefaultLibLocation: function () {
-          return "";
-        },
-        useCaseSensitiveFileNames: function () {
-          return false;
-        },
-        getCanonicalFileName: function (f) {
-          return f;
-        },
-        getCurrentDirectory: function () {
-          return "";
-        },
-        getNewLine: function () {
-          return "\n";
-        },
-        fileExists: function (f) {
-          if (f === fileName) return true;
-          const base = f.replace(/^\/?/, "");
-          return !!(libCache[base] || libCache[f] || libCache["/" + base]);
-        },
-        readFile: function (f) {
-          if (f === fileName) return code;
-          const base = f.replace(/^\/?/, "");
-          return libCache[base] || libCache[f] || libCache["/" + base] || "";
-        },
-        directoryExists: function () {
-          return true;
-        },
-        getDirectories: function () {
-          return [];
-        },
-      };
-
-      const program = ts.createProgram([fileName], compilerOptions, host);
-      const diags = []
-        .concat(ts.getPreEmitDiagnostics(program))
-        .concat(program.getSyntacticDiagnostics(sourceFile))
-        .concat(program.getSemanticDiagnostics(sourceFile));
-
-      // Only show diagnostics that belong to the user's file (skip lib noise)
-      const userDiags = diags.filter(function (d) {
-        if (!d.file) return true;
-        return d.file.fileName === fileName || d.file.fileName.indexOf("input") !== -1;
-      });
-
-      const seen = Object.create(null);
-      const messages = [];
-      for (let i = 0; i < userDiags.length; i++) {
-        const line = formatDiag(userDiags[i]);
-        if (!seen[line]) {
-          seen[line] = true;
-          messages.push(line);
         }
-      }
 
-      if (messages.length === 0) {
-        diagnosticsEl.textContent = "No errors";
-        diagnosticsEl.className = "diagnostics ok";
-        return true;
-      }
+        const host = {
+          getSourceFile: getSourceFile,
+          writeFile: function () {},
+          getDefaultLibFileName: function () {
+            return "lib.es2020.d.ts";
+          },
+          getDefaultLibLocation: function () {
+            return "";
+          },
+          useCaseSensitiveFileNames: function () {
+            return true;
+          },
+          getCanonicalFileName: function (f) {
+            return f;
+          },
+          getCurrentDirectory: function () {
+            return "/";
+          },
+          getNewLine: function () {
+            return "\n";
+          },
+          fileExists: function (f) {
+            if (f === fileName) return true;
+            const libName = normalizeLibName(f);
+            return Object.prototype.hasOwnProperty.call(fsMap, libName);
+          },
+          readFile: function (f) {
+            if (f === fileName) return code;
+            const libName = normalizeLibName(f);
+            return fsMap[libName];
+          },
+          directoryExists: function () {
+            return true;
+          },
+          getDirectories: function () {
+            return [];
+          },
+        };
 
-      diagnosticsEl.textContent = messages.join("\n");
-      diagnosticsEl.className = "diagnostics";
-      return false;
-    });
+        const program = ts.createProgram([fileName], compilerOptions, host);
+        const sourceFile = program.getSourceFile(fileName);
+
+        const diags = []
+          .concat(program.getSyntacticDiagnostics(sourceFile))
+          .concat(program.getSemanticDiagnostics(sourceFile))
+          .concat(program.getDeclarationDiagnostics(sourceFile))
+          .concat(ts.getPreEmitDiagnostics(program, sourceFile));
+
+        // Keep only diagnostics tied to the user file (or global with no file)
+        const userDiags = diags.filter(function (d) {
+          if (!d.file) return true;
+          return normalizeLibName(d.file.fileName) === fileName;
+        });
+
+        const seen = Object.create(null);
+        const messages = [];
+        for (let i = 0; i < userDiags.length; i++) {
+          const line = formatDiag(userDiags[i]);
+          // Drop residual lib-missing noise if any
+          if (/Cannot find global type/.test(line)) continue;
+          if (/File 'lib\./.test(line)) continue;
+          if (!seen[line]) {
+            seen[line] = true;
+            messages.push(line);
+          }
+        }
+
+        if (messages.length === 0) {
+          diagnosticsEl.textContent = "No errors";
+          diagnosticsEl.className = "diagnostics ok";
+          return true;
+        }
+
+        diagnosticsEl.textContent = messages.join("\n");
+        diagnosticsEl.className = "diagnostics";
+        return false;
+      })
+      .catch(function (err) {
+        diagnosticsEl.textContent =
+          "Type-check setup error: " + (err && err.message ? err.message : String(err));
+        diagnosticsEl.className = "diagnostics";
+        return false;
+      });
   }
 
   function formatRuntimeError(err) {
