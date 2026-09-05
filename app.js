@@ -24,7 +24,7 @@
     "}\n\n" +
     "console.log('2 + 3 =', add(2, 3));";
 
-  // ---- CodeMirror editor with syntax highlighting ----
+  // ---- CodeMirror editor ----
   const cm = CodeMirror.fromTextArea(document.getElementById("editor"), {
     mode: "text/typescript",
     theme: "default",
@@ -44,11 +44,11 @@
       },
       "Ctrl-/": "toggleComment",
       "Cmd-/": "toggleComment",
-      Tab: function (cm) {
-        if (cm.somethingSelected()) {
-          cm.indentSelection("add");
+      Tab: function (editor) {
+        if (editor.somethingSelected()) {
+          editor.indentSelection("add");
         } else {
-          cm.replaceSelection("  ", "end");
+          editor.replaceSelection("  ", "end");
         }
       },
     },
@@ -70,7 +70,9 @@
   cm.on("change", function () {
     updateUndoRedoButtons();
     clearTimeout(cm._checkTimer);
-    cm._checkTimer = setTimeout(checkTypes, 300);
+    cm._checkTimer = setTimeout(function () {
+      checkTypes();
+    }, 350);
   });
 
   btnUndo.addEventListener("click", function () {
@@ -87,7 +89,6 @@
 
   updateUndoRedoButtons();
 
-  // Keep CodeMirror sized when layout changes
   function refreshEditor() {
     cm.refresh();
   }
@@ -122,11 +123,98 @@
     }
   });
 
-  function formatDiag(d, sourceFile) {
+  // ---- Full type-check: load TS default libs into a virtual FS ----
+  const TS_VERSION = "5.6.3";
+  const LIB_CDN =
+    "https://cdn.jsdelivr.net/npm/typescript@" + TS_VERSION + "/lib/";
+
+  // Files needed for target ES2020 + DOM (console, setTimeout, etc.)
+  const LIB_FILES = [
+    "lib.es5.d.ts",
+    "lib.es2015.d.ts",
+    "lib.es2015.core.d.ts",
+    "lib.es2015.collection.d.ts",
+    "lib.es2015.iterable.d.ts",
+    "lib.es2015.generator.d.ts",
+    "lib.es2015.promise.d.ts",
+    "lib.es2015.proxy.d.ts",
+    "lib.es2015.reflect.d.ts",
+    "lib.es2015.symbol.d.ts",
+    "lib.es2015.symbol.wellknown.d.ts",
+    "lib.es2016.d.ts",
+    "lib.es2016.array.include.d.ts",
+    "lib.es2017.d.ts",
+    "lib.es2017.object.d.ts",
+    "lib.es2017.sharedmemory.d.ts",
+    "lib.es2017.string.d.ts",
+    "lib.es2017.intl.d.ts",
+    "lib.es2017.typedarrays.d.ts",
+    "lib.es2018.d.ts",
+    "lib.es2018.asyncgenerator.d.ts",
+    "lib.es2018.asynciterable.d.ts",
+    "lib.es2018.intl.d.ts",
+    "lib.es2018.promise.d.ts",
+    "lib.es2018.regexp.d.ts",
+    "lib.es2019.d.ts",
+    "lib.es2019.array.d.ts",
+    "lib.es2019.object.d.ts",
+    "lib.es2019.string.d.ts",
+    "lib.es2019.symbol.d.ts",
+    "lib.es2020.d.ts",
+    "lib.es2020.bigint.d.ts",
+    "lib.es2020.date.d.ts",
+    "lib.es2020.number.d.ts",
+    "lib.es2020.promise.d.ts",
+    "lib.es2020.sharedmemory.d.ts",
+    "lib.es2020.string.d.ts",
+    "lib.es2020.symbol.wellknown.d.ts",
+    "lib.es2020.intl.d.ts",
+    "lib.dom.d.ts",
+    "lib.dom.iterable.d.ts",
+    "lib.scripthost.d.ts",
+  ];
+
+  /** @type {Record<string, string>} */
+  const libCache = Object.create(null);
+  let libsReady = false;
+  let libsLoading = null;
+
+  function loadLibs() {
+    if (libsReady) return Promise.resolve();
+    if (libsLoading) return libsLoading;
+
+    diagnosticsEl.textContent = "Loading type definitions…";
+    diagnosticsEl.className = "diagnostics";
+
+    libsLoading = Promise.all(
+      LIB_FILES.map(function (name) {
+        return fetch(LIB_CDN + name)
+          .then(function (r) {
+            if (!r.ok) throw new Error("Failed to load " + name);
+            return r.text();
+          })
+          .then(function (text) {
+            libCache[name] = text;
+            // Also register under the bare name TS looks up sometimes
+            libCache["/" + name] = text;
+          })
+          .catch(function () {
+            // Non-fatal: some optional libs may 404 on version skew
+            libCache[name] = "";
+          });
+      })
+    ).then(function () {
+      libsReady = true;
+      libsLoading = null;
+    });
+
+    return libsLoading;
+  }
+
+  function formatDiag(d) {
     const msg = ts.flattenDiagnosticMessageText(d.messageText, "\n");
-    const file = d.file || sourceFile;
-    if (file && d.start != null) {
-      const pos = file.getLineAndCharacterOfPosition(d.start);
+    if (d.file && d.start != null) {
+      const pos = d.file.getLineAndCharacterOfPosition(d.start);
       return "Line " + (pos.line + 1) + ":" + (pos.character + 1) + " — " + msg;
     }
     return msg;
@@ -134,48 +222,122 @@
 
   function checkTypes() {
     if (typeof ts === "undefined") {
-      diagnosticsEl.textContent = "TypeScript not loaded yet...";
+      diagnosticsEl.textContent = "TypeScript not loaded yet…";
+      diagnosticsEl.className = "diagnostics";
+      return Promise.resolve(false);
+    }
+
+    return loadLibs().then(function () {
+      const code = getCode();
+      const fileName = "input.ts";
+
+      const compilerOptions = {
+        target: ts.ScriptTarget.ES2020,
+        module: ts.ModuleKind.ESNext,
+        lib: ["es2020", "dom"],
+        strict: true,
+        noEmit: true,
+        skipLibCheck: true,
+        allowNonTsExtensions: true,
+      };
+
+      const sourceFile = ts.createSourceFile(
+        fileName,
+        code,
+        compilerOptions.target,
+        true,
+        ts.ScriptKind.TS
+      );
+
+      const host = {
+        getSourceFile: function (name, languageVersion) {
+          if (name === fileName) return sourceFile;
+          // Normalize path
+          const base = name.replace(/^\/?/, "").replace(/\\/g, "/");
+          const text =
+            libCache[base] ||
+            libCache[name] ||
+            libCache["/" + base] ||
+            null;
+          if (text != null && text !== "") {
+            return ts.createSourceFile(
+              name,
+              text,
+              languageVersion || compilerOptions.target,
+              true
+            );
+          }
+          return undefined;
+        },
+        writeFile: function () {},
+        getDefaultLibFileName: function () {
+          return "lib.es2020.d.ts";
+        },
+        getDefaultLibLocation: function () {
+          return "";
+        },
+        useCaseSensitiveFileNames: function () {
+          return false;
+        },
+        getCanonicalFileName: function (f) {
+          return f;
+        },
+        getCurrentDirectory: function () {
+          return "";
+        },
+        getNewLine: function () {
+          return "\n";
+        },
+        fileExists: function (f) {
+          if (f === fileName) return true;
+          const base = f.replace(/^\/?/, "");
+          return !!(libCache[base] || libCache[f] || libCache["/" + base]);
+        },
+        readFile: function (f) {
+          if (f === fileName) return code;
+          const base = f.replace(/^\/?/, "");
+          return libCache[base] || libCache[f] || libCache["/" + base] || "";
+        },
+        directoryExists: function () {
+          return true;
+        },
+        getDirectories: function () {
+          return [];
+        },
+      };
+
+      const program = ts.createProgram([fileName], compilerOptions, host);
+      const diags = []
+        .concat(ts.getPreEmitDiagnostics(program))
+        .concat(program.getSyntacticDiagnostics(sourceFile))
+        .concat(program.getSemanticDiagnostics(sourceFile));
+
+      // Only show diagnostics that belong to the user's file (skip lib noise)
+      const userDiags = diags.filter(function (d) {
+        if (!d.file) return true;
+        return d.file.fileName === fileName || d.file.fileName.indexOf("input") !== -1;
+      });
+
+      const seen = Object.create(null);
+      const messages = [];
+      for (let i = 0; i < userDiags.length; i++) {
+        const line = formatDiag(userDiags[i]);
+        if (!seen[line]) {
+          seen[line] = true;
+          messages.push(line);
+        }
+      }
+
+      if (messages.length === 0) {
+        diagnosticsEl.textContent = "No errors";
+        diagnosticsEl.className = "diagnostics ok";
+        return true;
+      }
+
+      diagnosticsEl.textContent = messages.join("\n");
       diagnosticsEl.className = "diagnostics";
       return false;
-    }
-    const code = getCode();
-    const fileName = "input.ts";
-    const sourceFile = ts.createSourceFile(
-      fileName,
-      code,
-      ts.ScriptTarget.ES2020,
-      true,
-      ts.ScriptKind.TS
-    );
-    const synDiags = sourceFile.parseDiagnostics || [];
-    const result = ts.transpileModule(code, {
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2020,
-        module: ts.ModuleKind.None,
-        strict: true,
-        noEmitOnError: false,
-      },
-      reportDiagnostics: true,
-      fileName: fileName,
     });
-    const all = [].concat(synDiags).concat(result.diagnostics || []);
-    const seen = Object.create(null);
-    const messages = [];
-    for (let i = 0; i < all.length; i++) {
-      const line = formatDiag(all[i], sourceFile);
-      if (!seen[line]) {
-        seen[line] = true;
-        messages.push(line);
-      }
-    }
-    if (messages.length === 0) {
-      diagnosticsEl.textContent = "No errors";
-      diagnosticsEl.className = "diagnostics ok";
-      return true;
-    }
-    diagnosticsEl.textContent = messages.join("\n");
-    diagnosticsEl.className = "diagnostics";
-    return false;
   }
 
   function formatRuntimeError(err) {
@@ -409,8 +571,11 @@
   });
 
   function waitForTs() {
-    if (typeof ts !== "undefined") checkTypes();
-    else setTimeout(waitForTs, 100);
+    if (typeof ts !== "undefined") {
+      checkTypes();
+    } else {
+      setTimeout(waitForTs, 100);
+    }
   }
   waitForTs();
 })();
