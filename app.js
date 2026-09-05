@@ -13,24 +13,20 @@
   const btnClear = document.getElementById("btn-clear");
   const btnCloseOutput = document.getElementById("btn-close-output");
 
-  // --- History for Undo / Redo ---
   const MAX_HISTORY = 100;
   let history = [];
   let historyIndex = -1;
   let isApplyingHistory = false;
   let hasRunOnce = false;
-  let runId = 0; // cancel stale async finishes
+  let runId = 0;
 
   function pushHistory(value) {
     if (isApplyingHistory) return;
     if (historyIndex >= 0 && history[historyIndex] === value) return;
     history = history.slice(0, historyIndex + 1);
     history.push(value);
-    if (history.length > MAX_HISTORY) {
-      history.shift();
-    } else {
-      historyIndex++;
-    }
+    if (history.length > MAX_HISTORY) history.shift();
+    else historyIndex++;
     updateUndoRedoButtons();
   }
 
@@ -107,7 +103,6 @@
   btnUndo.addEventListener("click", undo);
   btnRedo.addEventListener("click", redo);
 
-  // --- Output panel ---
   function openOutput() {
     outputBackdrop.classList.add("visible");
     outputPanel.classList.add("open");
@@ -136,7 +131,6 @@
     }
   });
 
-  // --- Type / syntax check ---
   function formatDiag(d, sourceFile) {
     const msg = ts.flattenDiagnosticMessageText(d.messageText, "\n");
     const file = d.file || sourceFile;
@@ -156,7 +150,6 @@
 
     const code = editor.value;
     const fileName = "input.ts";
-
     const sourceFile = ts.createSourceFile(
       fileName,
       code,
@@ -164,9 +157,7 @@
       true,
       ts.ScriptKind.TS
     );
-
     const synDiags = sourceFile.parseDiagnostics || [];
-
     const result = ts.transpileModule(code, {
       compilerOptions: {
         target: ts.ScriptTarget.ES2020,
@@ -179,7 +170,6 @@
     });
 
     const all = [].concat(synDiags).concat(result.diagnostics || []);
-
     const seen = Object.create(null);
     const messages = [];
     for (let i = 0; i < all.length; i++) {
@@ -195,7 +185,6 @@
       diagnosticsEl.className = "diagnostics ok";
       return true;
     }
-
     diagnosticsEl.textContent = messages.join("\n");
     diagnosticsEl.className = "diagnostics";
     return false;
@@ -203,12 +192,9 @@
 
   function formatRuntimeError(err) {
     if (err == null) return "Unknown error";
-
     const name = err.name || "Error";
     const message = err.message || String(err);
-
     let text = name + ": " + message;
-
     if (err.stack) {
       const lines = String(err.stack)
         .split("\n")
@@ -222,23 +208,25 @@
           if (l === name + ": " + message || l === message) return false;
           return true;
         });
-
-      if (lines.length) {
-        text += "\n\n" + lines.slice(0, 4).join("\n");
-      }
+      if (lines.length) text += "\n\n" + lines.slice(0, 4).join("\n");
     }
-
     return text;
   }
 
-  function isThenable(v) {
-    return v != null && (typeof v === "object" || typeof v === "function") && typeof v.then === "function";
+  function stringifyArg(a) {
+    try {
+      if (typeof a === "string") return a;
+      if (typeof a === "object") return JSON.stringify(a, null, 2);
+      return String(a);
+    } catch (e) {
+      return String(a);
+    }
   }
 
-  // --- Compile & Run (supports async / setTimeout) ---
+  // --- Compile & Run ---
   function run() {
     const myRun = ++runId;
-    output.textContent = "";
+
     if (typeof ts === "undefined") {
       output.textContent = "Error: TypeScript library failed to load.";
       openOutput();
@@ -265,163 +253,162 @@
     }
 
     const logs = [];
-    let pendingTimers = 0;
-    let finished = false;
-    const MAX_WAIT_MS = 15000; // safety cap for long timers
+    let pending = 0; // timers still outstanding
+    let settled = false; // script promise settled
+    let done = false;
+    const MAX_WAIT_MS = 20000;
 
-    const original = {
-      log: console.log,
-      error: console.error,
-      warn: console.warn,
-      info: console.info,
-      setTimeout: window.setTimeout,
-      clearTimeout: window.clearTimeout,
-      setInterval: window.setInterval,
-      clearInterval: window.clearInterval,
+    const real = {
+      log: console.log.bind(console),
+      error: console.error.bind(console),
+      warn: console.warn.bind(console),
+      info: console.info.bind(console),
+      setTimeout: window.setTimeout.bind(window),
+      clearTimeout: window.clearTimeout.bind(window),
+      setInterval: window.setInterval.bind(window),
+      clearInterval: window.clearInterval.bind(window),
     };
 
-    function refreshOutput() {
+    function paint() {
       if (myRun !== runId) return;
-      const body =
-        logs.length > 0
-          ? logs.join("\n")
-          : finished
-            ? "(no console output)"
-            : "(running…)";
-      output.textContent = prefix + body;
+      if (logs.length) {
+        output.textContent = prefix + logs.join("\n");
+      } else if (done) {
+        output.textContent = prefix + "(no console output)";
+      } else {
+        output.textContent = prefix + "(running…)";
+      }
     }
 
-    function capture(level) {
+    function pushLog(line) {
+      logs.push(line);
+      paint();
+    }
+
+    function capture(tag) {
       return function () {
         const args = Array.prototype.slice.call(arguments);
-        const str = args
-          .map(function (a) {
-            try {
-              return typeof a === "object" ? JSON.stringify(a, null, 2) : String(a);
-            } catch (e) {
-              return String(a);
-            }
-          })
-          .join(" ");
-        logs.push((level ? "[" + level + "] " : "") + str);
-        refreshOutput();
-        original[level || "log"].apply(console, arguments);
+        const line =
+          (tag ? "[" + tag + "] " : "") +
+          args.map(stringifyArg).join(" ");
+        pushLog(line);
+        real[tag || "log"].apply(console, args);
       };
     }
 
-    function restoreGlobals() {
-      console.log = original.log;
-      console.error = original.error;
-      console.warn = original.warn;
-      console.info = original.info;
-      window.setTimeout = original.setTimeout;
-      window.clearTimeout = original.clearTimeout;
-      window.setInterval = original.setInterval;
-      window.clearInterval = original.clearInterval;
+    function restore() {
+      console.log = real.log;
+      console.error = real.error;
+      console.warn = real.warn;
+      console.info = real.info;
+      window.setTimeout = real.setTimeout;
+      window.clearTimeout = real.clearTimeout;
+      window.setInterval = real.setInterval;
+      window.clearInterval = real.clearInterval;
     }
 
-    function tryFinish() {
-      if (myRun !== runId || finished) return;
-      if (pendingTimers > 0) return;
-      finished = true;
-      restoreGlobals();
-      refreshOutput();
+    function finish() {
+      if (myRun !== runId || done) return;
+      // Wait until script settled AND no pending timers
+      if (!settled || pending > 0) return;
+      done = true;
+      restore();
+      paint();
       checkTypes();
     }
 
+    // Install capture
     console.log = capture("");
     console.error = capture("error");
     console.warn = capture("warn");
     console.info = capture("info");
 
-    // Track timers so we keep capturing until async work settles
-    window.setTimeout = function (fn, delay) {
-      const args = Array.prototype.slice.call(arguments, 2);
-      pendingTimers++;
-      refreshOutput();
-      return original.setTimeout(function () {
+    window.setTimeout = function (fn, ms) {
+      const extra = Array.prototype.slice.call(arguments, 2);
+      pending++;
+      paint();
+      return real.setTimeout(function () {
         try {
-          if (typeof fn === "function") fn.apply(null, args);
+          if (typeof fn === "function") fn.apply(null, extra);
         } catch (err) {
-          logs.push("Runtime error:\n" + formatRuntimeError(err));
-          refreshOutput();
+          pushLog("Runtime error:\n" + formatRuntimeError(err));
         } finally {
-          pendingTimers--;
-          tryFinish();
+          pending--;
+          finish();
         }
-      }, delay);
+      }, ms);
     };
 
     window.clearTimeout = function (id) {
-      return original.clearTimeout(id);
+      return real.clearTimeout(id);
     };
 
-    window.setInterval = function (fn, delay) {
-      // intervals keep pending forever until cleared — count as 1 sticky
-      pendingTimers++;
-      refreshOutput();
-      const id = original.setInterval(function () {
+    window.setInterval = function (fn, ms) {
+      pending++; // sticky until clearInterval
+      paint();
+      return real.setInterval(function () {
         try {
           if (typeof fn === "function") fn();
         } catch (err) {
-          logs.push("Runtime error:\n" + formatRuntimeError(err));
-          refreshOutput();
+          pushLog("Runtime error:\n" + formatRuntimeError(err));
         }
-      }, delay);
-      return id;
+      }, ms);
     };
 
     window.clearInterval = function (id) {
-      pendingTimers = Math.max(0, pendingTimers - 1);
-      const r = original.clearInterval(id);
-      tryFinish();
+      pending = Math.max(0, pending - 1);
+      const r = real.clearInterval(id);
+      finish();
       return r;
     };
 
-    // Hard timeout so we never hang forever
-    original.setTimeout(function () {
-      if (myRun !== runId || finished) return;
-      if (pendingTimers > 0) {
-        logs.push("[note] Still waiting on async work (stopped after " + MAX_WAIT_MS / 1000 + "s)");
+    // Safety: never hang more than MAX_WAIT_MS
+    real.setTimeout(function () {
+      if (myRun !== runId || done) return;
+      if (pending > 0 || !settled) {
+        pushLog(
+          "[note] Stopped waiting after " + MAX_WAIT_MS / 1000 + "s"
+        );
       }
-      pendingTimers = 0;
-      tryFinish();
+      pending = 0;
+      settled = true;
+      finish();
     }, MAX_WAIT_MS);
 
     openOutput();
-    refreshOutput();
+    paint();
 
+    // Run user code inside an async IIFE so await / async work
+    let scriptPromise;
     try {
-      // Run as async function body so top-level await works if user uses it
-      const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-      const fn = new AsyncFunction(result.outputText);
-      const ret = fn();
-
-      // If the script returns a Promise (or top-level await), wait for it
-      Promise.resolve(ret)
-        .then(function () {
-          // Drain microtasks / thenables kicked off without being returned
-          // (e.g. main() called but not awaited by the script)
-          return new Promise(function (resolve) {
-            // two ticks + a short delay covers typical promise chains
-            original.setTimeout(function () {
-              original.setTimeout(resolve, 0);
-            }, 0);
-          });
-        })
-        .then(function () {
-          tryFinish();
-        })
-        .catch(function (err) {
-          logs.push("Runtime error:\n" + formatRuntimeError(err));
-          refreshOutput();
-          tryFinish();
-        });
+      const wrapped =
+        "\"use strict\";\nreturn (async function () {\n" +
+        result.outputText +
+        "\n})();";
+      const fn = new Function(wrapped);
+      scriptPromise = fn();
     } catch (err) {
-      logs.push("Runtime error:\n" + formatRuntimeError(err));
-      refreshOutput();
-      tryFinish();
+      pushLog("Runtime error:\n" + formatRuntimeError(err));
+      settled = true;
+      finish();
+      return;
     }
+
+    Promise.resolve(scriptPromise)
+      .catch(function (err) {
+        pushLog("Runtime error:\n" + formatRuntimeError(err));
+      })
+      .then(function () {
+        // Give promise chains started by the script (e.g. main()) a chance
+        // to schedule their first timer / microtask.
+        return new Promise(function (resolve) {
+          real.setTimeout(resolve, 0);
+        });
+      })
+      .then(function () {
+        settled = true;
+        finish();
+      });
   }
 
   btnRun.addEventListener("click", run);
@@ -430,11 +417,8 @@
   });
 
   function waitForTs() {
-    if (typeof ts !== "undefined") {
-      checkTypes();
-    } else {
-      setTimeout(waitForTs, 100);
-    }
+    if (typeof ts !== "undefined") checkTypes();
+    else setTimeout(waitForTs, 100);
   }
   waitForTs();
 })();
