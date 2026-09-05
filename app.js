@@ -2,7 +2,7 @@
   "use strict";
 
   const editor = document.getElementById("editor");
-  const output = document.getElementById("output");
+  const outputEl = document.getElementById("output");
   const diagnosticsEl = document.getElementById("diagnostics");
   const outputPanel = document.getElementById("output-panel");
   const outputBackdrop = document.getElementById("output-backdrop");
@@ -147,7 +147,6 @@
       diagnosticsEl.className = "diagnostics";
       return false;
     }
-
     const code = editor.value;
     const fileName = "input.ts";
     const sourceFile = ts.createSourceFile(
@@ -168,7 +167,6 @@
       reportDiagnostics: true,
       fileName: fileName,
     });
-
     const all = [].concat(synDiags).concat(result.diagnostics || []);
     const seen = Object.create(null);
     const messages = [];
@@ -179,7 +177,6 @@
         messages.push(line);
       }
     }
-
     if (messages.length === 0) {
       diagnosticsEl.textContent = "No errors";
       diagnosticsEl.className = "diagnostics ok";
@@ -216,6 +213,7 @@
   function stringifyArg(a) {
     try {
       if (typeof a === "string") return a;
+      if (a === undefined) return "undefined";
       if (typeof a === "object") return JSON.stringify(a, null, 2);
       return String(a);
     } catch (e) {
@@ -223,197 +221,201 @@
     }
   }
 
-  // --- Compile & Run ---
   function run() {
     const myRun = ++runId;
 
-    if (typeof ts === "undefined") {
-      output.textContent = "Error: TypeScript library failed to load.";
-      openOutput();
-      return;
-    }
-
-    const code = editor.value;
-    const result = ts.transpileModule(code, {
-      compilerOptions: {
-        target: ts.ScriptTarget.ES2020,
-        module: ts.ModuleKind.None,
-        strict: true,
-      },
-      reportDiagnostics: true,
-      fileName: "input.ts",
-    });
-
-    let prefix = "";
-    if (result.diagnostics && result.diagnostics.length) {
-      const msgs = result.diagnostics.map(function (d) {
-        return ts.flattenDiagnosticMessageText(d.messageText, "\n");
-      });
-      prefix = "Compile errors:\n" + msgs.join("\n") + "\n\n";
-    }
-
-    const logs = [];
-    let pending = 0; // timers still outstanding
-    let settled = false; // script promise settled
-    let done = false;
-    const MAX_WAIT_MS = 20000;
-
-    const real = {
-      log: console.log.bind(console),
-      error: console.error.bind(console),
-      warn: console.warn.bind(console),
-      info: console.info.bind(console),
-      setTimeout: window.setTimeout.bind(window),
-      clearTimeout: window.clearTimeout.bind(window),
-      setInterval: window.setInterval.bind(window),
-      clearInterval: window.clearInterval.bind(window),
-    };
-
-    function paint() {
-      if (myRun !== runId) return;
-      if (logs.length) {
-        output.textContent = prefix + logs.join("\n");
-      } else if (done) {
-        output.textContent = prefix + "(no console output)";
-      } else {
-        output.textContent = prefix + "(running…)";
-      }
-    }
-
-    function pushLog(line) {
-      logs.push(line);
-      paint();
-    }
-
-    function capture(tag) {
-      return function () {
-        const args = Array.prototype.slice.call(arguments);
-        const line =
-          (tag ? "[" + tag + "] " : "") +
-          args.map(stringifyArg).join(" ");
-        pushLog(line);
-        real[tag || "log"].apply(console, args);
-      };
-    }
-
-    function restore() {
-      console.log = real.log;
-      console.error = real.error;
-      console.warn = real.warn;
-      console.info = real.info;
-      window.setTimeout = real.setTimeout;
-      window.clearTimeout = real.clearTimeout;
-      window.setInterval = real.setInterval;
-      window.clearInterval = real.clearInterval;
-    }
-
-    function finish() {
-      if (myRun !== runId || done) return;
-      // Wait until script settled AND no pending timers
-      if (!settled || pending > 0) return;
-      done = true;
-      restore();
-      paint();
-      checkTypes();
-    }
-
-    // Install capture
-    console.log = capture("");
-    console.error = capture("error");
-    console.warn = capture("warn");
-    console.info = capture("info");
-
-    window.setTimeout = function (fn, ms) {
-      const extra = Array.prototype.slice.call(arguments, 2);
-      pending++;
-      paint();
-      return real.setTimeout(function () {
-        try {
-          if (typeof fn === "function") fn.apply(null, extra);
-        } catch (err) {
-          pushLog("Runtime error:\n" + formatRuntimeError(err));
-        } finally {
-          pending--;
-          finish();
-        }
-      }, ms);
-    };
-
-    window.clearTimeout = function (id) {
-      return real.clearTimeout(id);
-    };
-
-    window.setInterval = function (fn, ms) {
-      pending++; // sticky until clearInterval
-      paint();
-      return real.setInterval(function () {
-        try {
-          if (typeof fn === "function") fn();
-        } catch (err) {
-          pushLog("Runtime error:\n" + formatRuntimeError(err));
-        }
-      }, ms);
-    };
-
-    window.clearInterval = function (id) {
-      pending = Math.max(0, pending - 1);
-      const r = real.clearInterval(id);
-      finish();
-      return r;
-    };
-
-    // Safety: never hang more than MAX_WAIT_MS
-    real.setTimeout(function () {
-      if (myRun !== runId || done) return;
-      if (pending > 0 || !settled) {
-        pushLog(
-          "[note] Stopped waiting after " + MAX_WAIT_MS / 1000 + "s"
-        );
-      }
-      pending = 0;
-      settled = true;
-      finish();
-    }, MAX_WAIT_MS);
-
-    openOutput();
-    paint();
-
-    // Run user code inside an async IIFE so await / async work
-    let scriptPromise;
     try {
-      const wrapped =
-        "\"use strict\";\nreturn (async function () {\n" +
-        result.outputText +
-        "\n})();";
-      const fn = new Function(wrapped);
-      scriptPromise = fn();
-    } catch (err) {
-      pushLog("Runtime error:\n" + formatRuntimeError(err));
-      settled = true;
-      finish();
-      return;
-    }
+      if (typeof ts === "undefined") {
+        outputEl.textContent = "Error: TypeScript library failed to load.";
+        openOutput();
+        return;
+      }
 
-    Promise.resolve(scriptPromise)
-      .catch(function (err) {
-        pushLog("Runtime error:\n" + formatRuntimeError(err));
-      })
-      .then(function () {
-        // Give promise chains started by the script (e.g. main()) a chance
-        // to schedule their first timer / microtask.
-        return new Promise(function (resolve) {
-          real.setTimeout(resolve, 0);
+      const code = editor.value;
+      const result = ts.transpileModule(code, {
+        compilerOptions: {
+          target: ts.ScriptTarget.ES2020,
+          module: ts.ModuleKind.None,
+          strict: true,
+        },
+        reportDiagnostics: true,
+        fileName: "input.ts",
+      });
+
+      let prefix = "";
+      if (result.diagnostics && result.diagnostics.length) {
+        const msgs = result.diagnostics.map(function (d) {
+          return ts.flattenDiagnosticMessageText(d.messageText, "\n");
         });
-      })
-      .then(function () {
+        prefix = "Compile errors:\n" + msgs.join("\n") + "\n\n";
+      }
+
+      const logs = [];
+      let pending = 0;
+      let settled = false;
+      let done = false;
+      const MAX_WAIT_MS = 20000;
+
+      function paint() {
+        if (myRun !== runId) return;
+        if (logs.length) {
+          outputEl.textContent = prefix + logs.join("\n");
+        } else if (done) {
+          outputEl.textContent = prefix + "(no console output)";
+        } else {
+          outputEl.textContent = prefix + "(running…)";
+        }
+      }
+
+      function pushLog(line) {
+        logs.push(line);
+        paint();
+      }
+
+      // Fake console injected into user code (works on iOS Safari)
+      const fakeConsole = {
+        log: function () {
+          pushLog(Array.prototype.map.call(arguments, stringifyArg).join(" "));
+        },
+        info: function () {
+          pushLog(
+            "[info] " +
+              Array.prototype.map.call(arguments, stringifyArg).join(" ")
+          );
+        },
+        warn: function () {
+          pushLog(
+            "[warn] " +
+              Array.prototype.map.call(arguments, stringifyArg).join(" ")
+          );
+        },
+        error: function () {
+          pushLog(
+            "[error] " +
+              Array.prototype.map.call(arguments, stringifyArg).join(" ")
+          );
+        },
+      };
+
+      // Track timers without permanently breaking window.setTimeout
+      const realSetTimeout = window.setTimeout.bind(window);
+      const realClearTimeout = window.clearTimeout.bind(window);
+      const realSetInterval = window.setInterval.bind(window);
+      const realClearInterval = window.clearInterval.bind(window);
+
+      function finish() {
+        if (myRun !== runId || done) return;
+        if (!settled || pending > 0) return;
+        done = true;
+        paint();
+        checkTypes();
+      }
+
+      function trackedTimeout(fn, ms) {
+        pending++;
+        paint();
+        return realSetTimeout(function () {
+          try {
+            if (typeof fn === "function") fn();
+          } catch (err) {
+            pushLog("Runtime error:\n" + formatRuntimeError(err));
+          } finally {
+            pending--;
+            finish();
+          }
+        }, ms);
+      }
+
+      // Open panel immediately so user always sees feedback
+      openOutput();
+      paint();
+
+      // Safety cap
+      realSetTimeout(function () {
+        if (myRun !== runId || done) return;
+        if (pending > 0 || !settled) {
+          pushLog("[note] Stopped waiting after " + MAX_WAIT_MS / 1000 + "s");
+        }
+        pending = 0;
         settled = true;
         finish();
-      });
+      }, MAX_WAIT_MS);
+
+      // Inject console + setTimeout into the sandbox via Function parameters
+      // so we never assign to the real console (broken on some iOS versions).
+      let scriptPromise;
+      try {
+        const wrapped =
+          '"use strict";\n' +
+          "return (async function () {\n" +
+          result.outputText +
+          "\n})();";
+
+        const fn = new Function(
+          "console",
+          "setTimeout",
+          "clearTimeout",
+          "setInterval",
+          "clearInterval",
+          wrapped
+        );
+
+        scriptPromise = fn(
+          fakeConsole,
+          trackedTimeout,
+          realClearTimeout,
+          function (cb, ms) {
+            pending++;
+            paint();
+            return realSetInterval(function () {
+              try {
+                if (typeof cb === "function") cb();
+              } catch (err) {
+                pushLog("Runtime error:\n" + formatRuntimeError(err));
+              }
+            }, ms);
+          },
+          function (id) {
+            pending = Math.max(0, pending - 1);
+            const r = realClearInterval(id);
+            finish();
+            return r;
+          }
+        );
+      } catch (err) {
+        pushLog("Runtime error:\n" + formatRuntimeError(err));
+        settled = true;
+        finish();
+        return;
+      }
+
+      Promise.resolve(scriptPromise)
+        .catch(function (err) {
+          pushLog("Runtime error:\n" + formatRuntimeError(err));
+        })
+        .then(function () {
+          return new Promise(function (resolve) {
+            realSetTimeout(resolve, 0);
+          });
+        })
+        .then(function () {
+          settled = true;
+          finish();
+        });
+    } catch (err) {
+      outputEl.textContent =
+        "Runner error:\n" + formatRuntimeError(err);
+      openOutput();
+    }
   }
 
-  btnRun.addEventListener("click", run);
+  btnRun.addEventListener("click", function (e) {
+    e.preventDefault();
+    run();
+  });
+
   btnClear.addEventListener("click", function () {
-    output.textContent = "";
+    outputEl.textContent = "";
   });
 
   function waitForTs() {
