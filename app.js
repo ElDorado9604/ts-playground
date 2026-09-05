@@ -19,6 +19,7 @@
   let historyIndex = -1;
   let isApplyingHistory = false;
   let hasRunOnce = false;
+  let runId = 0; // cancel stale async finishes
 
   function pushHistory(value) {
     if (isApplyingHistory) return;
@@ -200,7 +201,6 @@
     return false;
   }
 
-  /** Make runtime errors readable on mobile Safari (stack alone is often useless). */
   function formatRuntimeError(err) {
     if (err == null) return "Unknown error";
 
@@ -209,7 +209,6 @@
 
     let text = name + ": " + message;
 
-    // Optional short stack, cleaned of our runner frame
     if (err.stack) {
       const lines = String(err.stack)
         .split("\n")
@@ -218,10 +217,8 @@
         })
         .filter(function (l) {
           if (!l) return false;
-          // drop our internal runner frames
           if (/app\.js:\d+/.test(l)) return false;
           if (/^run@/.test(l)) return false;
-          // Safari often repeats message on first line
           if (l === name + ": " + message || l === message) return false;
           return true;
         });
@@ -234,8 +231,13 @@
     return text;
   }
 
-  // --- Compile & Run ---
+  function isThenable(v) {
+    return v != null && (typeof v === "object" || typeof v === "function") && typeof v.then === "function";
+  }
+
+  // --- Compile & Run (supports async / setTimeout) ---
   function run() {
+    const myRun = ++runId;
     output.textContent = "";
     if (typeof ts === "undefined") {
       output.textContent = "Error: TypeScript library failed to load.";
@@ -254,20 +256,40 @@
       fileName: "input.ts",
     });
 
+    let prefix = "";
     if (result.diagnostics && result.diagnostics.length) {
       const msgs = result.diagnostics.map(function (d) {
         return ts.flattenDiagnosticMessageText(d.messageText, "\n");
       });
-      output.textContent = "Compile errors:\n" + msgs.join("\n") + "\n\n";
+      prefix = "Compile errors:\n" + msgs.join("\n") + "\n\n";
     }
 
     const logs = [];
+    let pendingTimers = 0;
+    let finished = false;
+    const MAX_WAIT_MS = 15000; // safety cap for long timers
+
     const original = {
       log: console.log,
       error: console.error,
       warn: console.warn,
       info: console.info,
+      setTimeout: window.setTimeout,
+      clearTimeout: window.clearTimeout,
+      setInterval: window.setInterval,
+      clearInterval: window.clearInterval,
     };
+
+    function refreshOutput() {
+      if (myRun !== runId) return;
+      const body =
+        logs.length > 0
+          ? logs.join("\n")
+          : finished
+            ? "(no console output)"
+            : "(running…)";
+      output.textContent = prefix + body;
+    }
 
     function capture(level) {
       return function () {
@@ -282,8 +304,29 @@
           })
           .join(" ");
         logs.push((level ? "[" + level + "] " : "") + str);
+        refreshOutput();
         original[level || "log"].apply(console, arguments);
       };
+    }
+
+    function restoreGlobals() {
+      console.log = original.log;
+      console.error = original.error;
+      console.warn = original.warn;
+      console.info = original.info;
+      window.setTimeout = original.setTimeout;
+      window.clearTimeout = original.clearTimeout;
+      window.setInterval = original.setInterval;
+      window.clearInterval = original.clearInterval;
+    }
+
+    function tryFinish() {
+      if (myRun !== runId || finished) return;
+      if (pendingTimers > 0) return;
+      finished = true;
+      restoreGlobals();
+      refreshOutput();
+      checkTypes();
     }
 
     console.log = capture("");
@@ -291,25 +334,94 @@
     console.warn = capture("warn");
     console.info = capture("info");
 
-    try {
-      // Use indirect eval-style Function so user code runs in global-ish scope
-      const fn = new Function(result.outputText);
-      fn();
-      if (logs.length === 0) {
-        logs.push("(no console output)");
-      }
-      output.textContent += logs.join("\n");
-    } catch (err) {
-      output.textContent += "Runtime error:\n" + formatRuntimeError(err);
-    } finally {
-      console.log = original.log;
-      console.error = original.error;
-      console.warn = original.warn;
-      console.info = original.info;
-    }
+    // Track timers so we keep capturing until async work settles
+    window.setTimeout = function (fn, delay) {
+      const args = Array.prototype.slice.call(arguments, 2);
+      pendingTimers++;
+      refreshOutput();
+      return original.setTimeout(function () {
+        try {
+          if (typeof fn === "function") fn.apply(null, args);
+        } catch (err) {
+          logs.push("Runtime error:\n" + formatRuntimeError(err));
+          refreshOutput();
+        } finally {
+          pendingTimers--;
+          tryFinish();
+        }
+      }, delay);
+    };
 
-    checkTypes();
+    window.clearTimeout = function (id) {
+      return original.clearTimeout(id);
+    };
+
+    window.setInterval = function (fn, delay) {
+      // intervals keep pending forever until cleared — count as 1 sticky
+      pendingTimers++;
+      refreshOutput();
+      const id = original.setInterval(function () {
+        try {
+          if (typeof fn === "function") fn();
+        } catch (err) {
+          logs.push("Runtime error:\n" + formatRuntimeError(err));
+          refreshOutput();
+        }
+      }, delay);
+      return id;
+    };
+
+    window.clearInterval = function (id) {
+      pendingTimers = Math.max(0, pendingTimers - 1);
+      const r = original.clearInterval(id);
+      tryFinish();
+      return r;
+    };
+
+    // Hard timeout so we never hang forever
+    original.setTimeout(function () {
+      if (myRun !== runId || finished) return;
+      if (pendingTimers > 0) {
+        logs.push("[note] Still waiting on async work (stopped after " + MAX_WAIT_MS / 1000 + "s)");
+      }
+      pendingTimers = 0;
+      tryFinish();
+    }, MAX_WAIT_MS);
+
     openOutput();
+    refreshOutput();
+
+    try {
+      // Run as async function body so top-level await works if user uses it
+      const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+      const fn = new AsyncFunction(result.outputText);
+      const ret = fn();
+
+      // If the script returns a Promise (or top-level await), wait for it
+      Promise.resolve(ret)
+        .then(function () {
+          // Drain microtasks / thenables kicked off without being returned
+          // (e.g. main() called but not awaited by the script)
+          return new Promise(function (resolve) {
+            // two ticks + a short delay covers typical promise chains
+            original.setTimeout(function () {
+              original.setTimeout(resolve, 0);
+            }, 0);
+          });
+        })
+        .then(function () {
+          tryFinish();
+        })
+        .catch(function (err) {
+          logs.push("Runtime error:\n" + formatRuntimeError(err));
+          refreshOutput();
+          tryFinish();
+        });
+    } catch (err) {
+      logs.push("Runtime error:\n" + formatRuntimeError(err));
+      refreshOutput();
+      tryFinish();
+    }
   }
 
   btnRun.addEventListener("click", run);
