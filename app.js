@@ -1,7 +1,6 @@
 (function () {
   "use strict";
 
-  const editor = document.getElementById("editor");
   const outputEl = document.getElementById("output");
   const diagnosticsEl = document.getElementById("diagnostics");
   const outputPanel = document.getElementById("output-panel");
@@ -13,47 +12,8 @@
   const btnClear = document.getElementById("btn-clear");
   const btnCloseOutput = document.getElementById("btn-close-output");
 
-  const MAX_HISTORY = 100;
-  let history = [];
-  let historyIndex = -1;
-  let isApplyingHistory = false;
   let hasRunOnce = false;
   let runId = 0;
-
-  function pushHistory(value) {
-    if (isApplyingHistory) return;
-    if (historyIndex >= 0 && history[historyIndex] === value) return;
-    history = history.slice(0, historyIndex + 1);
-    history.push(value);
-    if (history.length > MAX_HISTORY) history.shift();
-    else historyIndex++;
-    updateUndoRedoButtons();
-  }
-
-  function undo() {
-    if (historyIndex <= 0) return;
-    historyIndex--;
-    isApplyingHistory = true;
-    editor.value = history[historyIndex];
-    isApplyingHistory = false;
-    updateUndoRedoButtons();
-    checkTypes();
-  }
-
-  function redo() {
-    if (historyIndex >= history.length - 1) return;
-    historyIndex++;
-    isApplyingHistory = true;
-    editor.value = history[historyIndex];
-    isApplyingHistory = false;
-    updateUndoRedoButtons();
-    checkTypes();
-  }
-
-  function updateUndoRedoButtons() {
-    btnUndo.disabled = historyIndex <= 0;
-    btnRedo.disabled = historyIndex >= history.length - 1;
-  }
 
   const defaultCode =
     "// Write TypeScript here\n" +
@@ -64,44 +24,75 @@
     "}\n\n" +
     "console.log('2 + 3 =', add(2, 3));";
 
-  editor.value = defaultCode;
-  pushHistory(defaultCode);
-
-  let inputTimer = null;
-  editor.addEventListener("input", function () {
-    clearTimeout(inputTimer);
-    inputTimer = setTimeout(function () {
-      pushHistory(editor.value);
-      checkTypes();
-    }, 300);
+  // ---- CodeMirror editor with syntax highlighting ----
+  const cm = CodeMirror.fromTextArea(document.getElementById("editor"), {
+    mode: "text/typescript",
+    theme: "default",
+    lineNumbers: true,
+    lineWrapping: true,
+    indentUnit: 2,
+    tabSize: 2,
+    indentWithTabs: false,
+    matchBrackets: true,
+    autoCloseBrackets: true,
+    extraKeys: {
+      "Ctrl-Enter": function () {
+        run();
+      },
+      "Cmd-Enter": function () {
+        run();
+      },
+      "Ctrl-/": "toggleComment",
+      "Cmd-/": "toggleComment",
+      Tab: function (cm) {
+        if (cm.somethingSelected()) {
+          cm.indentSelection("add");
+        } else {
+          cm.replaceSelection("  ", "end");
+        }
+      },
+    },
+    viewportMargin: Infinity,
   });
 
-  editor.addEventListener("keydown", function (e) {
-    if (e.key === "Tab") {
-      e.preventDefault();
-      const start = editor.selectionStart;
-      const end = editor.selectionEnd;
-      const val = editor.value;
-      editor.value = val.substring(0, start) + "  " + val.substring(end);
-      editor.selectionStart = editor.selectionEnd = start + 2;
-      pushHistory(editor.value);
-      return;
-    }
-    const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.key === "z" && !e.shiftKey) {
-      e.preventDefault();
-      undo();
-    } else if (mod && (e.key === "y" || (e.key === "z" && e.shiftKey))) {
-      e.preventDefault();
-      redo();
-    } else if (mod && e.key === "Enter") {
-      e.preventDefault();
-      run();
-    }
+  cm.setValue(defaultCode);
+
+  function getCode() {
+    return cm.getValue();
+  }
+
+  function updateUndoRedoButtons() {
+    const hist = cm.historySize();
+    btnUndo.disabled = hist.undo < 1;
+    btnRedo.disabled = hist.redo < 1;
+  }
+
+  cm.on("change", function () {
+    updateUndoRedoButtons();
+    clearTimeout(cm._checkTimer);
+    cm._checkTimer = setTimeout(checkTypes, 300);
   });
 
-  btnUndo.addEventListener("click", undo);
-  btnRedo.addEventListener("click", redo);
+  btnUndo.addEventListener("click", function () {
+    cm.undo();
+    cm.focus();
+    updateUndoRedoButtons();
+  });
+
+  btnRedo.addEventListener("click", function () {
+    cm.redo();
+    cm.focus();
+    updateUndoRedoButtons();
+  });
+
+  updateUndoRedoButtons();
+
+  // Keep CodeMirror sized when layout changes
+  function refreshEditor() {
+    cm.refresh();
+  }
+  window.addEventListener("resize", refreshEditor);
+  setTimeout(refreshEditor, 50);
 
   function openOutput() {
     outputBackdrop.classList.add("visible");
@@ -147,7 +138,7 @@
       diagnosticsEl.className = "diagnostics";
       return false;
     }
-    const code = editor.value;
+    const code = getCode();
     const fileName = "input.ts";
     const sourceFile = ts.createSourceFile(
       fileName,
@@ -231,7 +222,7 @@
         return;
       }
 
-      const code = editor.value;
+      const code = getCode();
       const result = ts.transpileModule(code, {
         compilerOptions: {
           target: ts.ScriptTarget.ES2020,
@@ -272,7 +263,6 @@
         paint();
       }
 
-      // Fake console injected into user code (works on iOS Safari)
       const fakeConsole = {
         log: function () {
           pushLog(Array.prototype.map.call(arguments, stringifyArg).join(" "));
@@ -295,9 +285,14 @@
               Array.prototype.map.call(arguments, stringifyArg).join(" ")
           );
         },
+        debug: function () {
+          pushLog(
+            "[debug] " +
+              Array.prototype.map.call(arguments, stringifyArg).join(" ")
+          );
+        },
       };
 
-      // Track timers without permanently breaking window.setTimeout
       const realSetTimeout = window.setTimeout.bind(window);
       const realClearTimeout = window.clearTimeout.bind(window);
       const realSetInterval = window.setInterval.bind(window);
@@ -326,11 +321,9 @@
         }, ms);
       }
 
-      // Open panel immediately so user always sees feedback
       openOutput();
       paint();
 
-      // Safety cap
       realSetTimeout(function () {
         if (myRun !== runId || done) return;
         if (pending > 0 || !settled) {
@@ -341,8 +334,6 @@
         finish();
       }, MAX_WAIT_MS);
 
-      // Inject console + setTimeout into the sandbox via Function parameters
-      // so we never assign to the real console (broken on some iOS versions).
       let scriptPromise;
       try {
         const wrapped =
@@ -403,8 +394,7 @@
           finish();
         });
     } catch (err) {
-      outputEl.textContent =
-        "Runner error:\n" + formatRuntimeError(err);
+      outputEl.textContent = "Runner error:\n" + formatRuntimeError(err);
       openOutput();
     }
   }

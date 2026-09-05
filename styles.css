@@ -92,30 +92,71 @@ main.editor-only {
   flex-direction: column;
   min-height: 0;
   padding: 0;
+  position: relative;
 }
 
-#editor {
+/* CodeMirror fills the main area */
+.CodeMirror {
   flex: 1;
-  width: 100%;
+  height: 100% !important;
   min-height: 0;
-  resize: none;
-  border: none;
-  border-radius: 0;
+  width: 100%;
   background: #0d1117;
   color: #e6edf3;
-  padding: 0.75rem 0.85rem;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
-  font-size: 16px; /* 16px avoids iOS zoom on focus */
-  line-height: 1.5;
-  tab-size: 2;
+  font-size: 15px;
+  line-height: 1.55;
   -webkit-overflow-scrolling: touch;
-  -webkit-user-select: text;
-  user-select: text;
 }
 
-#editor:focus {
-  outline: none;
+.CodeMirror-scroll {
+  min-height: 100%;
 }
+
+.CodeMirror-gutters {
+  background: #0d1117;
+  border-right: 1px solid #21262d;
+}
+
+.CodeMirror-linenumber {
+  color: #484f58;
+  padding: 0 8px 0 4px;
+  min-width: 2.2em;
+}
+
+.CodeMirror-cursor {
+  border-left: 2px solid #e6edf3;
+}
+
+.CodeMirror-selected {
+  background: #264f78 !important;
+}
+
+.CodeMirror-focused .CodeMirror-selected {
+  background: #264f78 !important;
+}
+
+/* Syntax colors (VS Code Dark+ style) */
+.cm-s-default .cm-keyword { color: #c586c0; }
+.cm-s-default .cm-operator { color: #d4d4d4; }
+.cm-s-default .cm-variable { color: #9cdcfe; }
+.cm-s-default .cm-variable-2 { color: #9cdcfe; }
+.cm-s-default .cm-variable-3 { color: #4ec9b0; }
+.cm-s-default .cm-def { color: #dcdcaa; }
+.cm-s-default .cm-property { color: #9cdcfe; }
+.cm-s-default .cm-number { color: #b5cea8; }
+.cm-s-default .cm-string { color: #ce9178; }
+.cm-s-default .cm-string-2 { color: #ce9178; }
+.cm-s-default .cm-comment { color: #6a9955; font-style: italic; }
+.cm-s-default .cm-atom { color: #569cd6; }
+.cm-s-default .cm-meta { color: #569cd6; }
+.cm-s-default .cm-tag { color: #569cd6; }
+.cm-s-default .cm-attribute { color: #9cdcfe; }
+.cm-s-default .cm-qualifier { color: #4ec9b0; }
+.cm-s-default .cm-builtin { color: #4ec9b0; }
+.cm-s-default .cm-type { color: #4ec9b0; }
+.cm-s-default .cm-bracket { color: #ffd700; }
+.cm-s-default .cm-punctuation { color: #d4d4d4; }
 
 .diagnostics {
   flex-shrink: 0;
@@ -140,7 +181,7 @@ main.editor-only {
   display: none;
 }
 
-/* ---- Output panel (class-based, no [hidden] fighting transforms) ---- */
+/* ---- Output panel ---- */
 .output-backdrop {
   position: fixed;
   inset: 0;
