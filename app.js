@@ -16,8 +16,8 @@
   let runId = 0;
   let activeWorker = null;
 
-  // Limits so infinite loops cannot freeze the page
-  const RUN_TIMEOUT_MS = 2000;
+  // Worker limits (no prompt/alert in workers)
+  const RUN_TIMEOUT_MS = 15000;
   const MAX_LOG_LINES = 500;
 
   const defaultCode =
@@ -127,7 +127,7 @@
     }
   });
 
-  // ---- Type libs ----
+  // ---- Type libs (same as before) ----
   const TS_VERSION = "5.6.3";
   const LIB_CDN =
     "https://cdn.jsdelivr.net/npm/typescript@" + TS_VERSION + "/lib/";
@@ -207,9 +207,7 @@
     if (slash >= 0) n = n.slice(slash + 1);
     if (n.indexOf("./") === 0) n = n.slice(2);
     if (Object.prototype.hasOwnProperty.call(fsMap, n)) return n;
-    if (Object.prototype.hasOwnProperty.call(LIB_ALIASES, n)) {
-      return LIB_ALIASES[n];
-    }
+    if (Object.prototype.hasOwnProperty.call(LIB_ALIASES, n)) return LIB_ALIASES[n];
     if (fsMap[n + ".d.ts"]) return n + ".d.ts";
     return n;
   }
@@ -288,7 +286,6 @@
 
         function getSourceFile(name) {
           if (sourceCache[name]) return sourceCache[name];
-
           if (name === fileName) {
             sourceCache[name] = ts.createSourceFile(
               fileName,
@@ -299,7 +296,6 @@
             );
             return sourceCache[name];
           }
-
           const resolved = resolveLibFile(name);
           const text = fsMap[resolved] || fsMap[name];
           if (typeof text === "string") {
@@ -414,6 +410,17 @@
     return name + ": " + message;
   }
 
+  function stringifyArg(a) {
+    try {
+      if (typeof a === "string") return a;
+      if (a === undefined) return "undefined";
+      if (typeof a === "object") return JSON.stringify(a, null, 2);
+      return String(a);
+    } catch (e) {
+      return String(a);
+    }
+  }
+
   function stopWorker() {
     if (activeWorker) {
       try {
@@ -423,7 +430,11 @@
     }
   }
 
-  // ---- Run in Web Worker (so infinite loops don't freeze the UI) ----
+  function needsDomDialogs(src) {
+    return /\b(prompt|alert|confirm)\s*\(/.test(src);
+  }
+
+  // ---- Run ----
   function run() {
     const myRun = ++runId;
     stopWorker();
@@ -454,140 +465,278 @@
         prefix = "Compile errors:\n" + msgs.join("\n") + "\n\n";
       }
 
-      const logs = [];
-      let done = false;
-
-      function paint() {
-        if (myRun !== runId) return;
-        if (logs.length) {
-          outputEl.textContent = prefix + logs.join("\n");
-        } else if (done) {
-          outputEl.textContent = prefix + "(no console output)";
-        } else {
-          outputEl.textContent = prefix + "(running…)";
-        }
+      // prompt/alert/confirm only exist on the main thread — use that path
+      if (needsDomDialogs(code) || needsDomDialogs(result.outputText)) {
+        runOnMainThread(myRun, result.outputText, prefix);
+        return;
       }
 
-      function finish() {
-        if (myRun !== runId || done) return;
-        done = true;
-        stopWorker();
-        paint();
-        checkTypes();
-      }
-
-      openOutput();
-      paint();
-
-      // Worker source: runs user JS, posts logs, supports async
-      const workerSrc =
-        "\"use strict\";\n" +
-        "var __logs = 0;\n" +
-        "var __maxLogs = " +
-        MAX_LOG_LINES +
-        ";\n" +
-        "function __send(type, payload) { try { postMessage({ type: type, payload: payload }); } catch (e) {} }\n" +
-        "function __stringify(a) {\n" +
-        "  try {\n" +
-        "    if (typeof a === 'string') return a;\n" +
-        "    if (a === undefined) return 'undefined';\n" +
-        "    if (typeof a === 'object') return JSON.stringify(a, null, 2);\n" +
-        "    return String(a);\n" +
-        "  } catch (e) { return String(a); }\n" +
-        "}\n" +
-        "function __logLine(tag, args) {\n" +
-        "  if (__logs >= __maxLogs) {\n" +
-        "    __send('limit', 'Stopped: too much console output (possible infinite loop)');\n" +
-        "    return false;\n" +
-        "  }\n" +
-        "  __logs++;\n" +
-        "  var line = (tag ? '[' + tag + '] ' : '') + Array.prototype.map.call(args, __stringify).join(' ');\n" +
-        "  __send('log', line);\n" +
-        "  return true;\n" +
-        "}\n" +
-        "var console = {\n" +
-        "  log: function() { if (!__logLine('', arguments)) throw new Error('__STOP__'); },\n" +
-        "  info: function() { if (!__logLine('info', arguments)) throw new Error('__STOP__'); },\n" +
-        "  warn: function() { if (!__logLine('warn', arguments)) throw new Error('__STOP__'); },\n" +
-        "  error: function() { if (!__logLine('error', arguments)) throw new Error('__STOP__'); },\n" +
-        "  debug: function() { if (!__logLine('debug', arguments)) throw new Error('__STOP__'); }\n" +
-        "};\n" +
-        "onmessage = function(ev) {\n" +
-        "  if (!ev.data || ev.data.type !== 'run') return;\n" +
-        "  var code = ev.data.code;\n" +
-        "  try {\n" +
-        "    var AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;\n" +
-        "    var fn = new AsyncFunction('console', code);\n" +
-        "    Promise.resolve(fn(console)).then(function() {\n" +
-        "      __send('done', null);\n" +
-        "    }).catch(function(err) {\n" +
-        "      if (err && err.message === '__STOP__') { __send('done', null); return; }\n" +
-        "      __send('error', (err && err.name ? err.name + ': ' : '') + (err && err.message ? err.message : String(err)));\n" +
-        "    });\n" +
-        "  } catch (err) {\n" +
-        "    if (err && err.message === '__STOP__') { __send('done', null); return; }\n" +
-        "    __send('error', (err && err.name ? err.name + ': ' : '') + (err && err.message ? err.message : String(err)));\n" +
-        "  }\n" +
-        "};\n";
-
-      const blob = new Blob([workerSrc], { type: "application/javascript" });
-      const url = URL.createObjectURL(blob);
-      const worker = new Worker(url);
-      activeWorker = worker;
-
-      const timeoutId = setTimeout(function () {
-        if (myRun !== runId || done) return;
-        logs.push(
-          "[stopped] Possible infinite loop — halted after " +
-            RUN_TIMEOUT_MS / 1000 +
-            "s"
-        );
-        finish();
-      }, RUN_TIMEOUT_MS);
-
-      worker.onmessage = function (ev) {
-        if (myRun !== runId || done) return;
-        const msg = ev.data || {};
-        if (msg.type === "log") {
-          logs.push(msg.payload);
-          // Throttle UI updates a bit for heavy loops
-          if (logs.length % 20 === 0 || logs.length < 20) paint();
-          else paint();
-        } else if (msg.type === "limit") {
-          logs.push("[stopped] " + msg.payload);
-          clearTimeout(timeoutId);
-          finish();
-        } else if (msg.type === "error") {
-          logs.push("Runtime error:\n" + msg.payload);
-          clearTimeout(timeoutId);
-          finish();
-        } else if (msg.type === "done") {
-          clearTimeout(timeoutId);
-          finish();
-        }
-      };
-
-      worker.onerror = function (err) {
-        if (myRun !== runId || done) return;
-        logs.push(
-          "Runtime error:\n" +
-            (err && err.message ? err.message : "Worker error")
-        );
-        clearTimeout(timeoutId);
-        finish();
-      };
-
-      worker.postMessage({ type: "run", code: result.outputText });
-
-      // Revoke blob URL after a short delay
-      setTimeout(function () {
-        URL.revokeObjectURL(url);
-      }, 1000);
+      runInWorker(myRun, result.outputText, prefix);
     } catch (err) {
-      outputEl.textContent =
-        "Runner error:\n" + formatRuntimeError(err);
+      outputEl.textContent = "Runner error:\n" + formatRuntimeError(err);
       openOutput();
     }
+  }
+
+  function runOnMainThread(myRun, jsCode, prefix) {
+    const logs = [];
+    let pending = 0;
+    let settled = false;
+    let done = false;
+
+    function paint() {
+      if (myRun !== runId) return;
+      if (logs.length) outputEl.textContent = prefix + logs.join("\n");
+      else if (done) outputEl.textContent = prefix + "(no console output)";
+      else outputEl.textContent = prefix + "(running…)";
+    }
+
+    function pushLog(line) {
+      logs.push(line);
+      paint();
+    }
+
+    function finish() {
+      if (myRun !== runId || done) return;
+      if (!settled || pending > 0) return;
+      done = true;
+      paint();
+      checkTypes();
+    }
+
+    const fakeConsole = {
+      log: function () {
+        pushLog(Array.prototype.map.call(arguments, stringifyArg).join(" "));
+      },
+      info: function () {
+        pushLog(
+          "[info] " + Array.prototype.map.call(arguments, stringifyArg).join(" ")
+        );
+      },
+      warn: function () {
+        pushLog(
+          "[warn] " + Array.prototype.map.call(arguments, stringifyArg).join(" ")
+        );
+      },
+      error: function () {
+        pushLog(
+          "[error] " +
+            Array.prototype.map.call(arguments, stringifyArg).join(" ")
+        );
+      },
+      debug: function () {
+        pushLog(
+          "[debug] " +
+            Array.prototype.map.call(arguments, stringifyArg).join(" ")
+        );
+      },
+    };
+
+    const realSetTimeout = window.setTimeout.bind(window);
+    const realClearTimeout = window.clearTimeout.bind(window);
+
+    function trackedTimeout(fn, ms) {
+      pending++;
+      paint();
+      return realSetTimeout(function () {
+        try {
+          if (typeof fn === "function") fn();
+        } catch (err) {
+          pushLog("Runtime error:\n" + formatRuntimeError(err));
+        } finally {
+          pending--;
+          finish();
+        }
+      }, ms);
+    }
+
+    openOutput();
+    paint();
+
+    // Safety for accidental infinite loops on main thread
+    const killId = realSetTimeout(function () {
+      if (myRun !== runId || done) return;
+      pushLog(
+        "[stopped] Possible infinite loop — halted after " +
+          RUN_TIMEOUT_MS / 1000 +
+          "s"
+      );
+      pending = 0;
+      settled = true;
+      finish();
+    }, RUN_TIMEOUT_MS);
+
+    try {
+      const wrapped =
+        '"use strict";\nreturn (async function () {\n' +
+        jsCode +
+        "\n})();";
+      const fn = new Function(
+        "console",
+        "prompt",
+        "alert",
+        "confirm",
+        "setTimeout",
+        "clearTimeout",
+        wrapped
+      );
+      const ret = fn(
+        fakeConsole,
+        function (msg, def) {
+          return window.prompt(msg, def);
+        },
+        function (msg) {
+          window.alert(msg);
+        },
+        function (msg) {
+          return window.confirm(msg);
+        },
+        trackedTimeout,
+        realClearTimeout
+      );
+
+      Promise.resolve(ret)
+        .catch(function (err) {
+          pushLog("Runtime error:\n" + formatRuntimeError(err));
+        })
+        .then(function () {
+          return new Promise(function (resolve) {
+            realSetTimeout(resolve, 0);
+          });
+        })
+        .then(function () {
+          settled = true;
+          clearTimeout(killId);
+          finish();
+        });
+    } catch (err) {
+      pushLog("Runtime error:\n" + formatRuntimeError(err));
+      settled = true;
+      clearTimeout(killId);
+      finish();
+    }
+  }
+
+  function runInWorker(myRun, jsCode, prefix) {
+    const logs = [];
+    let done = false;
+
+    function paint() {
+      if (myRun !== runId) return;
+      if (logs.length) outputEl.textContent = prefix + logs.join("\n");
+      else if (done) outputEl.textContent = prefix + "(no console output)";
+      else outputEl.textContent = prefix + "(running…)";
+    }
+
+    function finish() {
+      if (myRun !== runId || done) return;
+      done = true;
+      stopWorker();
+      paint();
+      checkTypes();
+    }
+
+    openOutput();
+    paint();
+
+    const workerSrc =
+      "\"use strict\";\n" +
+      "var __logs = 0;\n" +
+      "var __maxLogs = " +
+      MAX_LOG_LINES +
+      ";\n" +
+      "function __send(type, payload) { try { postMessage({ type: type, payload: payload }); } catch (e) {} }\n" +
+      "function __stringify(a) {\n" +
+      "  try {\n" +
+      "    if (typeof a === 'string') return a;\n" +
+      "    if (a === undefined) return 'undefined';\n" +
+      "    if (typeof a === 'object') return JSON.stringify(a, null, 2);\n" +
+      "    return String(a);\n" +
+      "  } catch (e) { return String(a); }\n" +
+      "}\n" +
+      "function __logLine(tag, args) {\n" +
+      "  if (__logs >= __maxLogs) {\n" +
+      "    __send('limit', 'Stopped: too much console output (possible infinite loop)');\n" +
+      "    return false;\n" +
+      "  }\n" +
+      "  __logs++;\n" +
+      "  var line = (tag ? '[' + tag + '] ' : '') + Array.prototype.map.call(args, __stringify).join(' ');\n" +
+      "  __send('log', line);\n" +
+      "  return true;\n" +
+      "}\n" +
+      "var console = {\n" +
+      "  log: function() { if (!__logLine('', arguments)) throw new Error('__STOP__'); },\n" +
+      "  info: function() { if (!__logLine('info', arguments)) throw new Error('__STOP__'); },\n" +
+      "  warn: function() { if (!__logLine('warn', arguments)) throw new Error('__STOP__'); },\n" +
+      "  error: function() { if (!__logLine('error', arguments)) throw new Error('__STOP__'); },\n" +
+      "  debug: function() { if (!__logLine('debug', arguments)) throw new Error('__STOP__'); }\n" +
+      "};\n" +
+      "onmessage = function(ev) {\n" +
+      "  if (!ev.data || ev.data.type !== 'run') return;\n" +
+      "  var code = ev.data.code;\n" +
+      "  try {\n" +
+      "    var AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;\n" +
+      "    var fn = new AsyncFunction('console', code);\n" +
+      "    Promise.resolve(fn(console)).then(function() {\n" +
+      "      __send('done', null);\n" +
+      "    }).catch(function(err) {\n" +
+      "      if (err && err.message === '__STOP__') { __send('done', null); return; }\n" +
+      "      __send('error', (err && err.name ? err.name + ': ' : '') + (err && err.message ? err.message : String(err)));\n" +
+      "    });\n" +
+      "  } catch (err) {\n" +
+      "    if (err && err.message === '__STOP__') { __send('done', null); return; }\n" +
+      "    __send('error', (err && err.name ? err.name + ': ' : '') + (err && err.message ? err.message : String(err)));\n" +
+      "  }\n" +
+      "};\n";
+
+    const blob = new Blob([workerSrc], { type: "application/javascript" });
+    const url = URL.createObjectURL(blob);
+    const worker = new Worker(url);
+    activeWorker = worker;
+
+    const timeoutId = setTimeout(function () {
+      if (myRun !== runId || done) return;
+      logs.push(
+        "[stopped] Possible infinite loop — halted after " +
+          RUN_TIMEOUT_MS / 1000 +
+          "s"
+      );
+      finish();
+    }, RUN_TIMEOUT_MS);
+
+    worker.onmessage = function (ev) {
+      if (myRun !== runId || done) return;
+      const msg = ev.data || {};
+      if (msg.type === "log") {
+        logs.push(msg.payload);
+        paint();
+      } else if (msg.type === "limit") {
+        logs.push("[stopped] " + msg.payload);
+        clearTimeout(timeoutId);
+        finish();
+      } else if (msg.type === "error") {
+        logs.push("Runtime error:\n" + msg.payload);
+        clearTimeout(timeoutId);
+        finish();
+      } else if (msg.type === "done") {
+        clearTimeout(timeoutId);
+        finish();
+      }
+    };
+
+    worker.onerror = function (err) {
+      if (myRun !== runId || done) return;
+      logs.push(
+        "Runtime error:\n" + (err && err.message ? err.message : "Worker error")
+      );
+      clearTimeout(timeoutId);
+      finish();
+    };
+
+    worker.postMessage({ type: "run", code: jsCode });
+    setTimeout(function () {
+      URL.revokeObjectURL(url);
+    }, 1000);
   }
 
   btnRun.addEventListener("click", function (e) {
@@ -600,11 +749,8 @@
   });
 
   function waitForTs() {
-    if (typeof ts !== "undefined") {
-      checkTypes();
-    } else {
-      setTimeout(waitForTs, 100);
-    }
+    if (typeof ts !== "undefined") checkTypes();
+    else setTimeout(waitForTs, 100);
   }
   waitForTs();
 })();
