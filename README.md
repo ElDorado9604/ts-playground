@@ -4,8 +4,8 @@ Lightweight TypeScript compiler web app that runs entirely in the browser. Desig
 
 ## Features
 
-- **Multi-file projects** (up to 3 files, flat folder)
-  - Default files: `main.ts` (entry, locked), `utils.ts`, `helpers.ts`
+- **Multi-file projects** (up to 10 files, flat folder)
+  - Default files: `main.ts` (entry, locked), `utils.ts`, `helpers.ts` (class example)
   - Create, rename, and delete extra files
   - Tabs to switch between files
   - Cross-file imports and type checking
@@ -29,7 +29,7 @@ Just open `index.html` in a browser, or serve the folder with any static server.
 ## How it works
 
 - Loads `typescript.js` from jsDelivr
-- Maintains up to 3 in-memory TypeScript files with independent CodeMirror documents
+- Maintains up to 10 in-memory TypeScript files with independent CodeMirror documents
 - Type-checks the whole project with a custom language-service host (supports relative imports)
 - Transpiles every file to CommonJS and runs them through a tiny module loader (Worker preferred)
 - Captures console output while executing

@@ -29,7 +29,7 @@
 
   const RUN_TIMEOUT_MS = 15000;
   const MAX_LOG_LINES = 500;
-  const MAX_FILES = 3;
+  const MAX_FILES = 10;
   const ENTRY = "main.ts";
 
   // ---- Default project files (flat) ----
@@ -37,11 +37,13 @@
     "main.ts":
       '// Entry file — cannot be renamed or deleted\n' +
       'import { add } from "./utils";\n' +
-      'import { format } from "./helpers";\n\n' +
+      'import { Formatter } from "./helpers";\n\n' +
       'const greeting: string = "Hello from TS Playground";\n' +
       "console.log(greeting);\n" +
-      'console.log("2 + 3 =", add(2, 3));\n' +
-      'console.log(format("Result", 42));\n',
+      'console.log("2 + 3 =", add(2, 3));\n\n' +
+      'const fmt = new Formatter("App");\n' +
+      'console.log(fmt.format("Result", 42));\n' +
+      'console.log(fmt.capitalize("typescript"));\n',
     "utils.ts":
       "export function add(a: number, b: number): number {\n" +
       "  return a + b;\n" +
@@ -50,11 +52,20 @@
       "  return a * b;\n" +
       "}\n",
     "helpers.ts":
-      "export function format(label: string, value: number): string {\n" +
-      "  return `${label}: ${value}`;\n" +
-      "}\n\n" +
-      "export function capitalize(s: string): string {\n" +
-      "  return s.charAt(0).toUpperCase() + s.slice(1);\n" +
+      "// Example of a TypeScript class\n" +
+      "export class Formatter {\n" +
+      "  private prefix: string;\n\n" +
+      "  constructor(prefix: string = \"\") {\n" +
+      "    this.prefix = prefix;\n" +
+      "  }\n\n" +
+      "  format(label: string, value: number): string {\n" +
+      "    const tag = this.prefix ? `[${this.prefix}] ` : \"\";\n" +
+      "    return `${tag}${label}: ${value}`;\n" +
+      "  }\n\n" +
+      "  capitalize(s: string): string {\n" +
+      "    if (!s) return s;\n" +
+      "    return s.charAt(0).toUpperCase() + s.slice(1);\n" +
+      "  }\n" +
       "}\n",
   };
 
@@ -239,7 +250,7 @@
 
   function createFile() {
     if (fileOrder.length >= MAX_FILES) {
-      showToast("Maximum of 3 files allowed.");
+      showToast("Maximum of 10 files allowed.");
       return;
     }
     let base = "file";
