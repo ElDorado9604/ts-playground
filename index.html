@@ -16,12 +16,22 @@
 </head>
 <body>
   <header>
-    <h1>TS Playground</h1>
-    <div class="toolbar">
-      <button type="button" id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
-      <button type="button" id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
-      <button type="button" id="btn-run" class="primary" title="Compile &amp; Run (Ctrl+Enter)">Run</button>
-      <button type="button" id="btn-output" title="Show output" disabled>Output</button>
+    <div class="header-top">
+      <h1>TS Playground</h1>
+      <div class="toolbar">
+        <button type="button" id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button type="button" id="btn-redo" title="Redo (Ctrl+Y)">Redo</button>
+        <button type="button" id="btn-run" class="primary" title="Compile &amp; Run (Ctrl+Enter)">Run</button>
+        <button type="button" id="btn-output" title="Show output" disabled>Output</button>
+      </div>
+    </div>
+
+    <div class="files-bar">
+      <div class="file-tabs" id="file-tabs" role="tablist" aria-label="Project files"></div>
+      <div class="files-actions">
+        <button type="button" id="btn-new-file" title="New file" aria-label="New TypeScript file">+</button>
+        <span class="file-count" id="file-count" aria-live="polite">0 / 3 files</span>
+      </div>
     </div>
   </header>
 
@@ -41,6 +51,23 @@
     </div>
     <pre id="output"></pre>
   </aside>
+
+  <!-- Rename dialog -->
+  <div id="rename-backdrop" class="modal-backdrop" aria-hidden="true"></div>
+  <div id="rename-dialog" class="modal-dialog" role="dialog" aria-labelledby="rename-title" aria-hidden="true">
+    <h2 id="rename-title">Rename file</h2>
+    <label for="rename-input" class="sr-only">New file name</label>
+    <input type="text" id="rename-input" maxlength="40" autocomplete="off" spellcheck="false" />
+    <p class="modal-hint">Only letters, numbers, underscores, hyphens. Extension .ts is added automatically.</p>
+    <p id="rename-error" class="modal-error" hidden></p>
+    <div class="modal-actions">
+      <button type="button" id="btn-rename-cancel">Cancel</button>
+      <button type="button" id="btn-rename-confirm" class="primary">Rename</button>
+    </div>
+  </div>
+
+  <!-- Toast for max files -->
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
   <script src="app.js"></script>
 </body>
