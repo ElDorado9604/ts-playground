@@ -5,7 +5,7 @@ var btnUndo=document.getElementById("btn-undo"),btnRedo=document.getElementById(
 var btnRun=document.getElementById("btn-run"),btnOutput=document.getElementById("btn-output");
 var btnClear=document.getElementById("btn-clear"),btnCloseOutput=document.getElementById("btn-close-output");
 var fileTabsEl=document.getElementById("file-tabs"),fileCountEl=document.getElementById("file-count");
-var btnNewFile=document.getElementById("btn-new-file");
+var btnNewFile=document.getElementById("btn-new-file"),btnClearAll=document.getElementById("btn-clear-all");
 var renameBackdrop=document.getElementById("rename-backdrop"),renameDialog=document.getElementById("rename-dialog");
 var renameInput=document.getElementById("rename-input"),renameError=document.getElementById("rename-error");
 var btnRenameCancel=document.getElementById("btn-rename-cancel"),btnRenameConfirm=document.getElementById("btn-rename-confirm");
@@ -68,7 +68,8 @@ function confirmRename(){if(!renameTarget)return;var r=validateFileName(renameIn
 if(!r.ok){renameError.textContent=r.error;renameError.hidden=false;return}if(r.name===renameTarget){closeRenameDialog();return}
 docs[r.name]=docs[renameTarget];delete docs[renameTarget];var idx=fileOrder.indexOf(renameTarget);
 if(idx>=0)fileOrder[idx]=r.name;if(activeFile===renameTarget)activeFile=r.name;closeRenameDialog();renderTabs();checkTypes();cm.focus()}
-btnNewFile.addEventListener("click",createFile);btnRenameCancel.addEventListener("click",closeRenameDialog);
+function clearAllFiles(){fileOrder.forEach(function(name){var empty="// "+name+"\n";if(docs[name]){docs[name].setValue(empty);docs[name].clearHistory()}});if(docs[activeFile])cm.swapDoc(docs[activeFile]);updateUndoRedoButtons();checkTypes();cm.focus();showToast("Cleared all files")}
+btnNewFile.addEventListener("click",createFile);if(btnClearAll)btnClearAll.addEventListener("click",clearAllFiles);btnRenameCancel.addEventListener("click",closeRenameDialog);
 btnRenameConfirm.addEventListener("click",confirmRename);renameBackdrop.addEventListener("click",closeRenameDialog);
 renameInput.addEventListener("keydown",function(e){if(e.key==="Enter"){e.preventDefault();confirmRename()}else if(e.key==="Escape")closeRenameDialog()});
 function openOutput(){outputBackdrop.classList.add("visible");outputPanel.classList.add("open");btnOutput.disabled=false;hasRunOnce=true}
